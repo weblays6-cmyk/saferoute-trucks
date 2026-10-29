@@ -10,18 +10,26 @@ NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
-# Nominatim rules: User-Agent header pettali, 1 request/second limit
+# Nominatim policy: a User-Agent header is required, max 1 request/second
 HEADERS = {"User-Agent": "SafeRouteTrucks/1.0 (take-home assessment)"}
 TIMEOUT = 20
 METERS_PER_MILE = 1609.344
-WEATHER_BATCH = 50          # Open-Meteo ki oka call lo max 50 locations
+WEATHER_BATCH = 50           # Open-Meteo accepts up to 50 locations per call
 WEATHER_CACHE_TTL = 30 * 60  # 30 minutes
 
-RETRY_STATUS = {429, 500, 502, 503, 504}   # temporary errors, malli try cheyochu
+RETRY_STATUS = {429, 500, 502, 503, 504}  # temporary errors worth retrying
+
+
+class ServiceError(Exception):
+    """An external API failed. The message is safe to show to the user."""
+
+
+class BadInput(ServiceError):
+    """The user's input is the problem (e.g. location not found). The API returns 400."""
 
 
 def _get_with_retry(url, params, headers=None, attempts=3):
-    """GET request. Temporary errors (503 etc.) ki 1s, 2s gap tho retry chestundi."""
+    """GET request that retries temporary errors (503 etc.) after 1s, then 2s."""
     last = None
     for attempt in range(attempts):
         try:
@@ -36,16 +44,12 @@ def _get_with_retry(url, params, headers=None, attempts=3):
     raise last
 
 
-class ServiceError(Exception):
-    """External API fail ayinappudu user ki clear message ivvadaniki."""
-
-
 # ---------------------------------------------------------------- Geocoding
 def geocode(query):
-    """Place name -> {"name", "lat", "lon"} (Nominatim)."""
+    """Place name -> {"name", "lat", "lon"} using Nominatim."""
     query = query.strip()
     if not query:
-        raise ServiceError("Location khaali undi")
+        raise BadInput("Location is empty")
 
     key = "geo:" + hashlib.md5(query.lower().encode()).hexdigest()
     hit = cache.get(key)
@@ -62,10 +66,10 @@ def geocode(query):
         r.raise_for_status()
         data = r.json()
     except (requests.RequestException, ValueError) as exc:
-        raise ServiceError(f"Geocoding fail ayindi: {exc}") from exc
+        raise ServiceError(f"Geocoding service failed: {exc}") from exc
 
     if not data:
-        raise ServiceError(f"'{query}' location dorakaledu")
+        raise BadInput(f"Could not find location: '{query}'")
 
     result = {
         "name": data[0]["display_name"],
@@ -73,14 +77,14 @@ def geocode(query):
         "lon": float(data[0]["lon"]),
     }
     cache.set(key, result, 24 * 3600)
-    time.sleep(1)   # Nominatim 1 req/sec rule ki respect
+    time.sleep(1)  # respect Nominatim's 1 request/second limit
     return result
 
 
 # ------------------------------------------------------------------ Routing
 def _osrm(waypoints, alternatives):
-    """OSRM ki call chesi routes list istundi. waypoints = [(lat, lon), ...]"""
-    # OSRM URL lo order "lon,lat" (lat,lon kaadu)
+    """Call OSRM and return a list of routes. waypoints = [(lat, lon), ...]"""
+    # OSRM expects "lon,lat" order in the URL (not lat,lon)
     path = ";".join(f"{lon},{lat}" for lat, lon in waypoints)
     params = {
         "alternatives": alternatives,
@@ -93,14 +97,14 @@ def _osrm(waypoints, alternatives):
         r.raise_for_status()
         data = r.json()
     except (requests.RequestException, ValueError) as exc:
-        raise ServiceError(f"Routing fail ayindi: {exc}") from exc
+        raise ServiceError(f"Routing service failed: {exc}") from exc
 
     if data.get("code") != "Ok":
-        raise ServiceError(f"Route dorakaledu: {data.get('message') or data.get('code')}")
+        raise ServiceError(f"No route found: {data.get('message') or data.get('code')}")
 
     return [
         {
-            # GeoJSON lo [lon, lat]. Manam (lat, lon) use chestam, anduke swap
+            # GeoJSON uses [lon, lat]; we work with (lat, lon), so swap here
             "coords": [(lat, lon) for lon, lat in item["geometry"]["coordinates"]],
             "distance_miles": item["distance"] / METERS_PER_MILE,
             "duration_min": item["duration"] / 60,
@@ -111,19 +115,19 @@ def _osrm(waypoints, alternatives):
 
 def _detour_vias(origin, destination):
     """
-    Public OSRM tarachuga 1-2 routes matrame istundi. 3 routes kavali kabatti,
-    origin-destination madhya line ki iru vaipula (perpendicular) kotha 'via' points create chestundi.
+    Public OSRM often returns only 1-2 routes. To reach 3, build extra 'via' points
+    on both sides of the origin-destination line (perpendicular offsets).
     """
     (lat1, lon1), (lat2, lon2) = origin, destination
     mid_lat, mid_lon = (lat1 + lat2) / 2, (lon1 + lon2) / 2
-    scale = math.cos(math.radians(mid_lat)) or 1.0   # longitude degrees chinnavi avthayi, adjust
+    scale = math.cos(math.radians(mid_lat)) or 1.0  # longitude degrees shrink with latitude
 
     x, y = (lon2 - lon1) * scale, lat2 - lat1
     norm = math.hypot(x, y) or 1.0
-    px, py = -y / norm, x / norm                      # 90 degrees rotate (perpendicular)
+    px, py = -y / norm, x / norm  # rotate 90 degrees to get the perpendicular direction
 
     vias = []
-    for fraction in (0.15, 0.30):                     # line length lo 15% leda 30% pakkaki
+    for fraction in (0.15, 0.30):  # offset as a fraction of the trip length
         offset = norm * fraction
         vias.append((mid_lat + py * offset, mid_lon + px * offset / scale))
         vias.append((mid_lat - py * offset, mid_lon - px * offset / scale))
@@ -131,14 +135,14 @@ def _detour_vias(origin, destination):
 
 
 def _is_duplicate(a, b):
-    """Distance mariyu time rendu 1.5% lopu same ayithe same route ani anukuntam."""
+    """Treat two routes as the same if distance and time both differ by under 1.5%."""
     def close(x, y):
         return abs(x - y) / max(x, y, 1e-9) < 0.015
     return close(a["distance_miles"], b["distance_miles"]) and close(a["duration_min"], b["duration_min"])
 
 
 def get_routes(origin, destination, want=3):
-    """origin/destination = (lat, lon). Max 'want' distinct routes istundi."""
+    """origin/destination = (lat, lon). Returns up to 'want' distinct routes."""
     routes = _osrm([origin, destination], "3")
     fastest = min(r["duration_min"] for r in routes)
 
@@ -150,9 +154,9 @@ def get_routes(origin, destination, want=3):
         except ServiceError:
             continue
         candidate = candidates[0]
-        if candidate["duration_min"] > fastest * 1.6:        # chala pedda detour vaddu
+        if candidate["duration_min"] > fastest * 1.6:  # skip huge detours
             continue
-        if any(_is_duplicate(candidate, r) for r in routes):  # already unna route laage unte skip
+        if any(_is_duplicate(candidate, r) for r in routes):  # skip near-copies
             continue
         routes.append(candidate)
 
@@ -165,7 +169,7 @@ def get_routes(origin, destination, want=3):
 
 # ------------------------------------------------------------------ Weather
 def _to_utc_naive(dt):
-    """Aware datetime ni UTC ki marchi tzinfo teesestundi. Naive ayithe UTC anukuntundi."""
+    """Convert an aware datetime to UTC and drop tzinfo. Naive datetimes are assumed UTC."""
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt
@@ -176,8 +180,8 @@ def _fetch_batch(locations, start_date, end_date):
         "latitude": ",".join(f"{lat:.4f}" for lat, _ in locations),
         "longitude": ",".join(f"{lon:.4f}" for _, lon in locations),
         "hourly": "wind_speed_10m,rain,showers,snowfall",
-        "wind_speed_unit": "mph",       # mph direct ga vastundi
-        "precipitation_unit": "inch",   # rain mariyu snow inches lo (mm/cm kaadu)
+        "wind_speed_unit": "mph",      # wind comes back in mph
+        "precipitation_unit": "inch",  # rain and snow in inches (not mm/cm)
         "timezone": "UTC",
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
@@ -186,13 +190,13 @@ def _fetch_batch(locations, start_date, end_date):
         r = _get_with_retry(OPEN_METEO_URL, params)
         if r.status_code == 400:
             reason = r.json().get("reason", "bad request")
-            raise ServiceError(f"Weather request reject ayindi: {reason}")
+            raise ServiceError(f"Weather request rejected: {reason}")
         r.raise_for_status()
         payload = r.json()
     except (requests.RequestException, ValueError) as exc:
-        raise ServiceError(f"Weather fail ayindi: {exc}") from exc
+        raise ServiceError(f"Weather service failed: {exc}") from exc
 
-    # 1 location ki dict, multiple ki list vastundi
+    # One location returns a dict, several locations return a list
     items = payload if isinstance(payload, list) else [payload]
 
     series = []
@@ -204,9 +208,9 @@ def _fetch_batch(locations, start_date, end_date):
         showers = [v or 0.0 for v in hourly["showers"]]
         snow = [v or 0.0 for v in hourly["snowfall"]]
         series.append({
-            "start": datetime.fromisoformat(hourly["time"][0]),   # naive UTC
+            "start": datetime.fromisoformat(hourly["time"][0]),  # naive UTC
             "wind_mph": wind,
-            # rain + showers kalipi rain (snow ni separate ga unchutunnam, double count avvadu)
+            # rain + showers combined; snow stays separate so nothing is double counted
             "rain_in_hr": [rain[i] + showers[i] for i in range(n)],
             "snow_in_hr": snow,
         })
@@ -215,15 +219,15 @@ def _fetch_batch(locations, start_date, end_date):
 
 def fetch_weather(locations, start_date, end_date):
     """
-    locations = [(lat, lon), ...]. Prathi location ki hourly forecast series istundi (same order lo).
-    Coordinates ni 2 decimals ki round chesi cache chestundi, batches lo fetch chestundi.
+    locations = [(lat, lon), ...]. Returns one hourly forecast series per location (same order).
+    Coordinates are rounded to 2 decimals for caching, and fetched in batches.
     """
     keys = [(round(lat, 2), round(lon, 2)) for lat, lon in locations]
     cache_key = lambda k: f"wx:{k[0]}:{k[1]}:{start_date}:{end_date}"
 
     found = {}
     missing = []
-    for k in dict.fromkeys(keys):               # duplicates teesesi order unchutundi
+    for k in dict.fromkeys(keys):  # remove duplicates, keep order
         hit = cache.get(cache_key(k))
         if hit is not None:
             found[k] = hit
@@ -240,7 +244,7 @@ def fetch_weather(locations, start_date, end_date):
 
 
 def weather_at(series, eta):
-    """ETA ki daggara unna hour forecast teesukuntundi."""
+    """Pick the forecast for the hour nearest to the ETA."""
     hours = round((_to_utc_naive(eta) - series["start"]).total_seconds() / 3600)
     idx = max(0, min(hours, len(series["wind_mph"]) - 1))
     return {
@@ -251,7 +255,7 @@ def weather_at(series, eta):
 
 
 def weather_for_points(points):
-    """RoutePoint list (checkpoints.py nundi) ki, prathi point ETA ki weather istundi."""
+    """For a list of RoutePoints (from checkpoints.py), return the weather at each point's ETA."""
     etas = [_to_utc_naive(p.eta) for p in points]
     series = fetch_weather([(p.lat, p.lon) for p in points], min(etas).date(), max(etas).date())
     return [weather_at(s, p.eta) for s, p in zip(series, points)]
