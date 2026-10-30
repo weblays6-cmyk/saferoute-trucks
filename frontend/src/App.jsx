@@ -48,10 +48,16 @@ export default function App() {
 
   const onSelectRoute = useCallback((id) => setSelectedRouteId(id), [])
 
+  // After Find is pressed, bring the map to the top of the screen (phone + PC)
+  const mapAnchorRef = useRef(null)
+  const scrollToMap = () => requestAnimationFrame(() =>
+    mapAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+
   async function runTrip(overrides = {}) {
     const f = { ...form, ...overrides }
     setForm(f)
     setLoading(true); setError('')
+    scrollToMap()
     try {
       const data = await analyzeTrip({
         origin: f.origin, destination: f.destination,
@@ -64,6 +70,7 @@ export default function App() {
                    routeLabel: rec?.label, miles: rec?.distance_miles })
       setSelectedRouteId(data.recommended_route_id)  // start by showing the winning route's checkpoints
       setHeatHour(0)
+      scrollToMap()  // results are in - make sure the map is what the user sees
     } catch (err) {
       setError(err.message)
       setResult(null)
@@ -200,7 +207,7 @@ export default function App() {
           )}
         </div>
 
-        <div className="centre">
+        <div className="centre" ref={mapAnchorRef}>
           <MapView result={result} selectedRouteId={selectedRoute?.id}
                    onSelectRoute={onSelectRoute} showHeat={showHeat} heatHour={heatHour}
                    onReroute={onReroute} onJourneyMode={setJourneyMode}
