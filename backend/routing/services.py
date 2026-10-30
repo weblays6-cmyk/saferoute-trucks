@@ -10,6 +10,7 @@ NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api/"
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
+OSRM_FALLBACK_URL = "https://routing.openstreetmap.de/routed-car/route/v1/driving"
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
 # Nominatim policy: a User-Agent header is required, max 1 request/second
@@ -159,12 +160,23 @@ def _osrm(waypoints, alternatives):
         "geometries": "geojson",
         "steps": "false",
     }
-    try:
-        r = requests.get(f"{OSRM_URL}/{path}", params=params, headers=HEADERS, timeout=TIMEOUT)
-        r.raise_for_status()
-        data = r.json()
-    except (requests.RequestException, ValueError) as exc:
-        raise ServiceError(f"Routing service failed: {exc}") from exc
+    # The public OSRM demo server rate-limits shared/hosted IPs too, so on a
+    # transport failure (429/5xx) retry the same request against the FOSSGIS
+    # routing server, which speaks the same OSRM API. A genuine "NoRoute"
+    # answer is not retried - both servers use the same road data.
+    data = None
+    last_error = None
+    for base in (OSRM_URL, OSRM_FALLBACK_URL):
+        try:
+            r = requests.get(f"{base}/{path}", params=params, headers=HEADERS, timeout=TIMEOUT)
+            r.raise_for_status()
+            data = r.json()
+            break
+        except (requests.RequestException, ValueError) as exc:
+            last_error = exc
+            data = None
+    if data is None:
+        raise ServiceError(f"Routing service failed: {last_error}") from last_error
 
     if data.get("code") != "Ok":
         raise ServiceError(f"No route found: {data.get('message') or data.get('code')}")

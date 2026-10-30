@@ -203,3 +203,20 @@ def test_geocode_bad_input_when_no_provider_finds_place(monkeypatch):
     monkeypatch.setattr("routing.services.requests.get", fake_get)
     with pytest.raises(services.BadInput):
         services.geocode("Nowhere Land XYZ")
+
+
+def test_osrm_falls_back_to_second_server(monkeypatch):
+    def fake_get(url, params=None, **kwargs):
+        if "router.project-osrm.org" in url:
+            return FakeResponse({}, status=503)
+        if "routing.openstreetmap.de" in url:
+            return FakeResponse({"code": "Ok", "routes": [{
+                "geometry": {"coordinates": [[-96.8, 32.7], [-97.5, 35.47]]},
+                "distance": 322000, "duration": 13320,
+            }]})
+        raise AssertionError("unexpected url " + url)
+
+    monkeypatch.setattr("routing.services.requests.get", fake_get)
+    routes = services._osrm([(32.7, -96.8), (35.47, -97.5)], "false")
+    assert len(routes) == 1
+    assert routes[0]["coords"][0] == (32.7, -96.8)
