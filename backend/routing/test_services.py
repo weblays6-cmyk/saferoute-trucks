@@ -248,3 +248,26 @@ def test_fetch_weather_falls_back_to_metno_when_open_meteo_refuses(monkeypatch):
     assert abs(s["wind_mph"][0] - 22.3694) < 0.01     # 10 m/s -> mph
     assert abs(s["rain_in_hr"][0] - 1.0) < 0.001      # 25.4 mm -> 1 inch, warm -> rain
     assert abs(s["snow_in_hr"][1] - 1.0) < 0.001      # 2.54 mm water below freezing -> ~1 inch snow
+
+
+def test_parse_steps_flattens_legs_and_marks_miles():
+    item = {"legs": [
+        {"steps": [
+            {"distance": 1609.344, "name": "Main St", "maneuver": {"type": "depart", "modifier": "left"}},
+            {"distance": 3218.688, "name": "Oak Ave", "maneuver": {"type": "turn", "modifier": "right"}},
+        ]},
+        {"steps": [
+            {"distance": 0, "name": "Oak Ave", "maneuver": {"type": "arrive"}},
+        ]},
+    ]}
+    steps = services._parse_steps(item)
+    assert [s["type"] for s in steps] == ["depart", "turn", "arrive"]
+    assert steps[0]["mile"] == 0.0
+    assert steps[1]["mile"] == 1.0
+    assert steps[2]["mile"] == 3.0
+    assert steps[1]["name"] == "Oak Ave" and steps[1]["modifier"] == "right"
+
+
+def test_parse_steps_tolerates_missing_legs():
+    assert services._parse_steps({}) == []
+    assert services._parse_steps({"legs": None}) == []

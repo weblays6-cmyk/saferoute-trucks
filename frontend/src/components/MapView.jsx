@@ -77,6 +77,61 @@ function pointAtFraction(route, t) {
 
 const OFF_ROUTE_METRES = 300 // further than this from the route = off route
 
+// ---------- Turn-by-turn helpers (Google Maps style banner) ----------
+function fmtDist(mi) {
+  if (mi < 0.1) return `${Math.max(10, Math.round((mi * 5280) / 10) * 10)} ft`
+  return `${mi.toFixed(1)} mi`
+}
+function dirWord(mod = '') {
+  if (mod.includes('uturn')) return 'around (U-turn)'
+  if (mod.includes('sharp left')) return 'sharply left'
+  if (mod.includes('sharp right')) return 'sharply right'
+  if (mod.includes('slight left')) return 'slightly left'
+  if (mod.includes('slight right')) return 'slightly right'
+  if (mod.includes('left')) return 'left'
+  if (mod.includes('right')) return 'right'
+  return 'straight'
+}
+function stepArrow(st) {
+  const m = st.modifier || '', t = st.type || ''
+  if (t === 'arrive') return '📍'
+  if (t === 'roundabout' || t === 'rotary') return '↻'
+  if (m.includes('uturn')) return '⤶'
+  if (m.includes('sharp left')) return '↙'
+  if (m.includes('sharp right')) return '↘'
+  if (m.includes('slight left')) return '↖'
+  if (m.includes('slight right')) return '↗'
+  if (m.includes('left')) return '↰'
+  if (m.includes('right')) return '↱'
+  return '↑'
+}
+function stepText(st) {
+  const name = st.name && st.name !== '-' ? st.name : ''
+  const onto = name ? ` onto ${name}` : ''
+  switch (st.type) {
+    case 'depart': return name ? `towards ${name}` : 'Start your journey'
+    case 'arrive': return 'Arrive at your destination'
+    case 'turn': return `Turn ${dirWord(st.modifier)}${onto}`
+    case 'end of road': return `At the end of the road, turn ${dirWord(st.modifier)}${onto}`
+    case 'merge': return `Merge${onto}`
+    case 'fork': return `Keep ${dirWord(st.modifier)} at the fork${onto}`
+    case 'roundabout': case 'rotary': return `At the roundabout, take exit ${st.exit || ''}${onto}`.replace('  ', ' ')
+    case 'on ramp': return `Take the ramp${onto}`
+    case 'off ramp': return `Take the exit${onto}`
+    case 'new name': case 'continue': return name ? `Continue${onto}` : 'Continue straight'
+    default: return name ? `towards ${name}` : 'Continue straight'
+  }
+}
+// The next meaningful maneuver after distMi, plus the one after it ("Then …").
+function nextManeuver(route, distMi) {
+  const steps = (route.steps || []).filter((st, i) =>
+    !(st.type === 'depart' && i > 0) &&
+    !(st.type === 'arrive' && st.mile < route.distance_miles - 0.05))
+  const idx = steps.findIndex((st) => st.mile > distMi + 0.015)
+  if (idx === -1) return null
+  return { step: steps[idx], next: steps[idx + 1] && steps[idx + 1].type !== 'arrive' ? steps[idx + 1] : null }
+}
+
 // Compass bearing (degrees) from point a to point b.
 function bearingDeg(a, b) {
   const rad = Math.PI / 180
@@ -187,28 +242,93 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           '<div class="jbtns">' +
           '  <button class="jbtn live" disabled>📍 Start Live Journey</button>' +
           '  <button class="jbtn demo" disabled>▶ Demo Drive</button>' +
-          '</div>' +
-          '<div class="jpanel" style="display:none">' +
-          '  <div class="jnav"></div>' +
-          '  <div class="jbar"><div class="jfill"></div></div>' +
-          '  <div class="jstat"></div>' +
-          '  <div class="jwarn"></div>' +
-          '  <button class="jend">✕ End Journey</button>' +
           '</div>'
         L.DomEvent.disableClickPropagation(div)
         journeyUiRef.current = {
+          ...journeyUiRef.current,
           live: div.querySelector('.live'), demo: div.querySelector('.demo'),
-          panel: div.querySelector('.jpanel'), nav: div.querySelector('.jnav'),
-          fill: div.querySelector('.jfill'), stat: div.querySelector('.jstat'),
-          warn: div.querySelector('.jwarn'),
+          btns: div.querySelector('.jbtns'),
         }
         journeyUiRef.current.live.addEventListener('click', startLive)
         journeyUiRef.current.demo.addEventListener('click', toggleDemo)
-        div.querySelector('.jend').addEventListener('click', () => endJourney())
         return div
       },
     })
     new JourneyControl({ position: 'bottomleft' }).addTo(mapRef.current)
+
+    // ---- Google Maps style navigation banner (top) ----
+    const BannerControl = L.Control.extend({
+      onAdd() {
+        const div = L.DomUtil.create('div', 'leaflet-control navbanner-wrap')
+        div.innerHTML =
+          '<div class="navbanner" style="display:none">' +
+          '  <div class="nb-main"><span class="nb-arrow">↑</span>' +
+          '    <div class="nb-body"><div class="nb-dist"></div><div class="nb-text"></div></div></div>' +
+          '  <div class="nb-then" style="display:none"></div>' +
+          '</div>'
+        L.DomEvent.disableClickPropagation(div)
+        const root = div.querySelector('.navbanner')
+        journeyUiRef.current = { ...journeyUiRef.current, banner: {
+          root, arrow: div.querySelector('.nb-arrow'), dist: div.querySelector('.nb-dist'),
+          text: div.querySelector('.nb-text'), then: div.querySelector('.nb-then'),
+        } }
+        return div
+      },
+    })
+    new BannerControl({ position: 'topleft' }).addTo(mapRef.current)
+
+    // ---- Bottom bar: trip line, ETA, weather risk, End (Google Maps style) ----
+    const BarControl = L.Control.extend({
+      onAdd() {
+        const div = L.DomUtil.create('div', 'leaflet-control navbottom-wrap')
+        div.innerHTML =
+          '<div class="navbottom" style="display:none">' +
+          '  <div class="jnav"></div>' +
+          '  <div class="nb-etarow"><span class="jeta"></span><button class="jend">✕ End</button></div>' +
+          '  <div class="jbar"><div class="jfill"></div></div>' +
+          '  <div class="jstat"></div>' +
+          '  <div class="jwarn"></div>' +
+          '</div>'
+        L.DomEvent.disableClickPropagation(div)
+        const root = div.querySelector('.navbottom')
+        journeyUiRef.current = { ...journeyUiRef.current,
+          panel: root, nav: div.querySelector('.jnav'),
+          fill: div.querySelector('.jfill'), stat: div.querySelector('.jstat'),
+          warn: div.querySelector('.jwarn'), eta: div.querySelector('.jeta'),
+        }
+        div.querySelector('.jend').addEventListener('click', () => endJourney())
+        return div
+      },
+    })
+    new BarControl({ position: 'bottomleft' }).addTo(mapRef.current)
+
+    function setBanner({ arrow = '↑', dist = '', text = '', then = null, tone = '' } = {}) {
+      const b = journeyUiRef.current?.banner
+      if (!b) return
+      b.root.className = 'navbanner' + (tone ? ' ' + tone : '')
+      b.arrow.textContent = arrow
+      b.dist.textContent = dist
+      b.text.textContent = text
+      if (then) { b.then.style.display = 'block'; b.then.textContent = then }
+      else b.then.style.display = 'none'
+    }
+    J.setBanner = setBanner
+
+    function showJourneyUi() {
+      const ui = journeyUiRef.current
+      if (!ui) return
+      if (ui.banner) ui.banner.root.style.display = 'block'
+      if (ui.panel) ui.panel.style.display = 'block'
+      if (ui.btns) ui.btns.style.display = 'none'
+    }
+    function hideJourneyUi() {
+      const ui = journeyUiRef.current
+      if (!ui) return
+      if (ui.banner) ui.banner.root.style.display = 'none'
+      if (ui.panel) ui.panel.style.display = 'none'
+      if (ui.btns) ui.btns.style.display = 'block'
+    }
+    J.showUi = showJourneyUi; J.hideUi = hideJourneyUi
 
     function setNav() {
       const ui = journeyUiRef.current
@@ -232,7 +352,9 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     J.setButtons = setButtons
 
     function showPanel() {
-      journeyUiRef.current.panel.style.display = 'block'
+      showJourneyUi()
+      setBanner({ arrow: '🧭', text: J.mode === 'live' ? 'Waiting for GPS signal…' : 'Journey started', dist: '' })
+      if (J.mode === 'live') J.bannerHold = true
       setNav()
       journeyModeRef.current?.(true)
       // The layout switches to fullscreen over the next frames — refit the map.
@@ -252,8 +374,8 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (J.truck) { J.truck.remove(); J.truck = null }
       if (J.liveDot) { J.liveDot.remove(); J.liveDot = null }
       Object.assign(J, { mode: null, playing: false, t: 0, raf: null, watchId: null, offCount: 0, rerouting: false, frac: 0, arrived: false })
-      const ui = journeyUiRef.current
-      if (ui) ui.panel.style.display = 'none'
+      J.bannerHold = false
+      hideJourneyUi()
       setButtons()
       journeyModeRef.current?.(false)
     }
@@ -298,7 +420,9 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         if (J.t < 1) J.raf = requestAnimationFrame(step)
         else {
           J.playing = false; J.raf = null
-          journeyUiRef.current.stat.textContent = 'Arrived at destination — trip complete. 🎉'
+          J.bannerHold = true
+          setBanner({ arrow: '🎉', text: 'You have arrived', dist: '', tone: 'ok', then: 'Trip complete — well driven!' })
+          if (journeyUiRef.current.eta) journeyUiRef.current.eta.innerHTML = '<b>Arrived</b><span> • trip complete</span>'
           journeyUiRef.current.warn.textContent = ''
           setButtons()
         }
@@ -319,11 +443,13 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       const ui = journeyUiRef.current
       ui.stat.textContent = 'Waiting for GPS signal… allow location access if asked.'
       ui.warn.textContent = ''
+      if (ui.eta) ui.eta.innerHTML = ''
       J.watchId = navigator.geolocation.watchPosition(
         (pos) => onLivePosition(pos),
         () => {
           ui.warn.textContent = 'GPS signal lost or permission denied — journey tracking paused.'
           ui.warn.className = 'jwarn bad'
+          setBanner({ arrow: '⚠', text: 'GPS signal lost', dist: '', tone: 'warn', then: 'Tracking paused — check location permission.' })
         },
         { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
       )
@@ -349,22 +475,27 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
 
       const near = nearestOnRoute(route, ll)
       const ui = journeyUiRef.current
+      if (J.bannerHold && !J.rerouting) J.bannerHold = false  // first GPS fix: banner goes live
       updatePanel(route, Math.min(1, Math.max(0, near.frac)))
       if (near.dist <= OFF_ROUTE_METRES) {
         J.offCount = 0
+        J.bannerHold = false
         if (!J.rerouting) { ui.warn.textContent = 'On route ✓ — following the highlighted route.'; ui.warn.className = 'jwarn' }
       } else {
         J.offCount += 1
+        J.bannerHold = true
         if (J.offCount >= 2 && !J.rerouting) {
           // Off route twice in a row: notify the driver and reroute from here.
           J.rerouting = true
           ui.warn.textContent = '⚠ You are off the route! Finding a new route from your current location…'
           ui.warn.className = 'jwarn bad'
+          setBanner({ arrow: '⚠', text: 'You are off the route!', dist: '', tone: 'warn', then: 'Finding a new route from your current location…' })
           L.popup().setLatLng(ll).setContent('<b>⚠ Off route</b><br>Recalculating a new route to your destination…').openOn(map)
           rerouteRef.current?.(pos.coords.latitude, pos.coords.longitude)
         } else if (!J.rerouting) {
           ui.warn.textContent = '⚠ You seem to be leaving the route…'
           ui.warn.className = 'jwarn bad'
+          setBanner({ arrow: '⚠', text: 'You seem to be leaving the route…', dist: '', tone: 'warn' })
         }
       }
     }
@@ -383,6 +514,19 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       const mileNow = t * totalMiles
       ui.fill.style.width = `${Math.round(t * 100)}%`
       const minsLeft = Math.max(0, Math.round(route.summary.duration_min * (1 - t)))
+      if (ui.eta) {
+        const etaClock = new Date(Date.now() + minsLeft * 60000)
+          .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+        ui.eta.innerHTML = `<b>${minsLeft} min</b><span> • ${(totalMiles - mileNow).toFixed(1)} mi left • ETA ${etaClock}</span>`
+      }
+      if (!J.bannerHold && !J.rerouting) {
+        const nm = nextManeuver(route, mileNow)
+        if (nm) setBanner({
+          arrow: stepArrow(nm.step), dist: fmtDist(nm.step.mile - mileNow),
+          text: stepText(nm.step),
+          then: nm.next ? `Then ${stepArrow(nm.next)} ${nm.next.name || ''}`.trim() : null,
+        })
+      }
       const passed = [...route.checkpoints].filter((c) => c.mile <= mileNow)
       const cur = passed[passed.length - 1]
       const next = route.checkpoints.find((c) => c.mile > mileNow)
@@ -427,14 +571,16 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         if (wasRerouting && journeyUiRef.current) {
           journeyUiRef.current.warn.textContent = '✅ New route ready — follow the highlighted route.'
           journeyUiRef.current.warn.className = 'jwarn'
+          J.bannerHold = true
+          J.setBanner?.({ arrow: '✅', text: 'New route ready', dist: '', tone: 'ok', then: 'Follow the highlighted route.' })
+          setTimeout(() => { J.bannerHold = false }, 4000)
         }
       } else {
         // A genuinely new search (or mode not live): reset the journey.
         if (J.mode) J.end?.()
         if (J.truck) { J.truck.remove(); J.truck = null }
         Object.assign(J, { playing: false, raf: null, t: 0, route: sel, mode: null })
-        const ui = journeyUiRef.current
-        if (ui) ui.panel.style.display = 'none'
+        J.hideUi?.()
       }
       J.meta = result ? {
         from: result.origin.name, to: result.destination.name,
@@ -442,7 +588,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       } : null
       if (!J.mode) J.route = sel
       J.setButtons?.()
-      if (journeyUiRef.current?.panel.style.display === 'block') {
+      if (journeyUiRef.current?.panel.style.display !== 'none') {
         const ui = journeyUiRef.current
         if (J.meta) ui.nav.innerHTML =
           `<div class="jnav-row"><span class="dot from"></span><span>${J.meta.from}</span></div>` +

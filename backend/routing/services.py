@@ -159,7 +159,7 @@ def _osrm(waypoints, alternatives):
         "alternatives": alternatives,
         "overview": "full",
         "geometries": "geojson",
-        "steps": "false",
+        "steps": "true",   # turn-by-turn steps for the navigation banner
     }
     # The public OSRM demo server rate-limits shared/hosted IPs too, so on a
     # transport failure (429/5xx) retry the same request against the FOSSGIS
@@ -188,9 +188,39 @@ def _osrm(waypoints, alternatives):
             "coords": [(lat, lon) for lon, lat in item["geometry"]["coordinates"]],
             "distance_miles": item["distance"] / METERS_PER_MILE,
             "duration_min": item["duration"] / 60,
+            "steps": _parse_steps(item),
         }
         for item in data["routes"]
     ]
+
+
+def _parse_steps(route_item):
+    """Flatten OSRM legs/steps into turn-by-turn maneuvers.
+
+    Returns [{mile, name, type, modifier, exit}] where mile is the cumulative
+    distance at which the maneuver happens. Consecutive duplicates at via
+    points (leg joints) are merged. Capped so the payload stays small.
+    """
+    steps = []
+    mile = 0.0
+    for leg in route_item.get("legs") or []:
+        for st in leg.get("steps") or []:
+            man = st.get("maneuver") or {}
+            steps.append({
+                "mile": round(mile, 2),
+                "name": st.get("name") or "",
+                "type": man.get("type") or "",
+                "modifier": man.get("modifier") or "",
+                "exit": man.get("exit"),
+            })
+            mile += (st.get("distance") or 0) / METERS_PER_MILE
+    out = []
+    for s in steps:
+        if (out and abs(out[-1]["mile"] - s["mile"]) < 0.01
+                and out[-1]["type"] == s["type"] and out[-1]["name"] == s["name"]):
+            continue
+        out.append(s)
+    return out[:80]
 
 
 def _detour_vias(origin, destination):

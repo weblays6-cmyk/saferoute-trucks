@@ -53,6 +53,9 @@ export default function App() {
   const scrollToMap = () => requestAnimationFrame(() =>
     mapAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
 
+  // Journey start: jump straight to the map (mobile + PC), like Google Maps.
+  useEffect(() => { if (journeyMode) scrollToMap() }, [journeyMode])
+
   async function runTrip(overrides = {}) {
     const f = { ...form, ...overrides }
     setForm(f)
@@ -216,7 +219,7 @@ export default function App() {
           {result?.warnings?.length > 0 && (
             <div className="warnings">{result.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}</div>
           )}
-          {result && (() => {
+          {result && !journeyMode && (() => {
             const rec = result.routes.find((r) => r.id === result.recommended_route_id)
             return rec ? (
               <div className="banner">
@@ -232,14 +235,14 @@ export default function App() {
               </div>
             ) : null
           })()}
-          {result && (
+          {result && !journeyMode && (
             <div className="shiftbar">
               <span>Leaving at a different time can change the safest route:</span>
               <button onClick={() => shiftDeparture(6)} disabled={loading}>Leave +6 hrs later</button>
               <button onClick={() => shiftDeparture(12)} disabled={loading}>Leave +12 hrs later</button>
             </div>
           )}
-          <CheckpointTable route={selectedRoute} />
+          {!journeyMode && <CheckpointTable route={selectedRoute} />}
         </div>
 
         <aside className="rightcol">

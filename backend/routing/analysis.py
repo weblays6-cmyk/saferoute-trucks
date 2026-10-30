@@ -198,6 +198,7 @@ def run_analysis(origin_text, destination_text, departure, load_lb, interval_mil
             "distance_miles": summary["distance_miles"],
             "duration_min": summary["duration_min"],
             "geometry": simplify(route["coords"]),
+            "steps": route.get("steps", []),
             "checkpoints": cp_payloads,
             "summary": summary,
             "_heat": [_heat_payload(route["id"], p, s, departure, load_lb)
