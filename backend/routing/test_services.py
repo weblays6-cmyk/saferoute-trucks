@@ -220,3 +220,31 @@ def test_osrm_falls_back_to_second_server(monkeypatch):
     routes = services._osrm([(32.7, -96.8), (35.47, -97.5)], "false")
     assert len(routes) == 1
     assert routes[0]["coords"][0] == (32.7, -96.8)
+
+
+def test_fetch_weather_falls_back_to_metno_when_open_meteo_refuses(monkeypatch):
+    monkeypatch.setattr("routing.services.time.sleep", lambda s: None)
+
+    def fake_get(url, params=None, **kwargs):
+        if url == services.OPEN_METEO_URL:
+            return FakeResponse({}, status=429)
+        if url == services.METNO_URL:
+            return FakeResponse({"properties": {"timeseries": [
+                {"time": "2026-01-01T00:00:00Z", "data": {
+                    "instant": {"details": {"wind_speed": 10.0, "air_temperature": 20.0}},
+                    "next_1_hours": {"details": {"precipitation_amount": 25.4}},
+                }},
+                {"time": "2026-01-01T01:00:00Z", "data": {
+                    "instant": {"details": {"wind_speed": 5.0, "air_temperature": -2.0}},
+                    "next_1_hours": {"details": {"precipitation_amount": 2.54}},
+                }},
+            ]}})
+        raise AssertionError("unexpected url " + url)
+
+    monkeypatch.setattr("routing.services.requests.get", fake_get)
+    result = services.fetch_weather([(32.77, -96.79)], datetime(2026, 1, 1).date(), datetime(2026, 1, 1).date())
+    s = result[0]
+    assert len(s["wind_mph"]) == 24
+    assert abs(s["wind_mph"][0] - 22.3694) < 0.01     # 10 m/s -> mph
+    assert abs(s["rain_in_hr"][0] - 1.0) < 0.001      # 25.4 mm -> 1 inch, warm -> rain
+    assert abs(s["snow_in_hr"][1] - 1.0) < 0.001      # 2.54 mm water below freezing -> ~1 inch snow

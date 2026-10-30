@@ -12,6 +12,7 @@ GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
 OSRM_FALLBACK_URL = "https://routing.openstreetmap.de/routed-car/route/v1/driving"
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+METNO_URL = "https://api.met.no/weatherapi/locationforecast/2.0/complete"
 
 # Nominatim policy: a User-Agent header is required, max 1 request/second
 HEADERS = {"User-Agent": "SafeRouteTrucks/1.0 (take-home assessment)"}
@@ -296,6 +297,63 @@ def _fetch_batch(locations, start_date, end_date):
     return series
 
 
+def _metno_series(lat, lon, start_date, end_date):
+    """Fallback weather series from MET Norway (api.met.no), same shape as the
+    Open-Meteo series. Used only when Open-Meteo refuses us (429): it is a
+    separate free service with its own quota. Wind m/s -> mph; precipitation
+    mm -> in/hr; near/below-freezing precipitation counts as snow (about a
+    10:1 snow-to-water ratio) because this feed has no separate snow field.
+    """
+    try:
+        r = requests.get(
+            METNO_URL,
+            params={"lat": f"{lat:.4f}", "lon": f"{lon:.4f}"},
+            headers=HEADERS,
+            timeout=TIMEOUT,
+        )
+        r.raise_for_status()
+        entries = r.json()["properties"]["timeseries"]
+    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+        raise ServiceError(f"Weather service failed: {exc}") from exc
+
+    base = datetime.combine(start_date, datetime.min.time())  # naive UTC midnight
+    total = ((end_date - start_date).days + 1) * 24
+    wind = [None] * total
+    rain = [0.0] * total
+    snow = [0.0] * total
+    for entry in entries:
+        t = datetime.fromisoformat(entry["time"].replace("Z", "+00:00")).replace(tzinfo=None)
+        idx = int((t - base).total_seconds() // 3600)
+        if idx < 0 or idx >= total:
+            continue
+        data = entry["data"]
+        det = data.get("instant", {}).get("details", {})
+        if det.get("wind_speed") is not None:
+            wind[idx] = det["wind_speed"] * 2.23694
+        temp = det.get("air_temperature")
+        if "next_1_hours" in data:
+            span, nxt = 1, data["next_1_hours"]["details"]
+        elif "next_6_hours" in data:
+            span, nxt = 6, data["next_6_hours"]["details"]
+        else:
+            continue
+        per_hour_mm = (nxt.get("precipitation_amount") or 0.0) / span
+        for j in range(idx, min(idx + span, total)):
+            if temp is not None and temp <= 1.0:
+                snow[j] = per_hour_mm / 2.54   # ~10:1 snow depth vs water
+            else:
+                rain[j] = per_hour_mm / 25.4
+            if wind[j] is None and det.get("wind_speed") is not None:
+                wind[j] = det["wind_speed"] * 2.23694
+    last = 0.0
+    for i in range(total):
+        if wind[i] is None:
+            wind[i] = last
+        else:
+            last = wind[i]
+    return {"start": base, "wind_mph": wind, "rain_in_hr": rain, "snow_in_hr": snow}
+
+
 def fetch_weather(locations, start_date, end_date):
     """
     locations = [(lat, lon), ...]. Returns one hourly forecast series per location (same order).
@@ -315,9 +373,31 @@ def fetch_weather(locations, start_date, end_date):
 
     for i in range(0, len(missing), WEATHER_BATCH):
         batch = missing[i:i + WEATHER_BATCH]
-        for k, series in zip(batch, _fetch_batch(batch, start_date, end_date)):
-            found[k] = series
-            cache.set(cache_key(k), series, WEATHER_CACHE_TTL)
+        try:
+            batch_series = _fetch_batch(batch, start_date, end_date)
+        except ServiceError as exc:
+            if str(exc).startswith("Weather request rejected"):
+                raise  # a real problem with our request (e.g. bad dates), not quota
+            # Open-Meteo refused (usually its free quota on our server IP).
+            # Fall back to MET Norway per location so the search still works.
+            from concurrent.futures import ThreadPoolExecutor
+            def _one(k):
+                ck = f"wxm:{k[0]}:{k[1]}:{start_date}:{end_date}"
+                hit = cache.get(ck)
+                if hit is not None:
+                    return k, hit
+                series = _metno_series(k[0], k[1], start_date, end_date)
+                cache.set(ck, series, WEATHER_CACHE_TTL)
+                return k, series
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                batch_series = None
+                for k, series in pool.map(_one, batch):
+                    found[k] = series
+                    cache.set(cache_key(k), series, WEATHER_CACHE_TTL)
+        if batch_series is not None:
+            for k, series in zip(batch, batch_series):
+                found[k] = series
+                cache.set(cache_key(k), series, WEATHER_CACHE_TTL)
 
     return [found[k] for k in keys]
 
