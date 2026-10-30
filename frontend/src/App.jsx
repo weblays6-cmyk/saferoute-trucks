@@ -23,7 +23,7 @@ function shortPlace(name) {
 
 export default function App() {
   const [form, setForm] = useState({
-    origin: 'Dallas, TX', destination: 'Oklahoma City, OK',
+    origin: '', destination: '',  // no prefilled places - the driver enters their own trip
     departure: tomorrow8am(), loadLb: 35000, interval: '25',
   })
   const [result, setResult] = useState(null)

@@ -19,7 +19,6 @@ async function reverseGeocode(lat, lon) {
 export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepart }) {
   const set = (key) => (e) => { setForm({ ...form, [key]: e.target.value }); suggest(key, e.target.value) }
   const [gpsMsg, setGpsMsg] = useState('')
-  const autoTried = useRef(false)
 
   // Place predictions (Google-Maps style): as the user types, Nominatim suggests
   // matching places; tapping one fills the field. Debounced, free, no API key.
@@ -88,24 +87,13 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
     )
   }
 
-  // Google-Maps behaviour: if the user has ALREADY granted location permission,
-  // fill Origin automatically on load (no surprise prompt otherwise — the button asks).
-  useEffect(() => {
-    if (autoTried.current) return
-    autoTried.current = true
-    navigator.permissions?.query({ name: 'geolocation' })
-      .then((s) => { if (s.state === 'granted') useMyLocation(true) })
-      .catch(() => {})
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   return (
     <form className="panel form" onSubmit={onSubmit}>
       <h2>Trip Details</h2>
       <label>Origin (start place)</label>
       <div className="ac-wrap">
         <input value={form.origin} onChange={set('origin')} required autoComplete="off"
-               placeholder="Type a place — suggestions will appear" />
+               placeholder="Enter a place — suggestions will appear" />
         {sugList('origin')}
       </div>
       <button type="button" className="gps-btn" onClick={() => useMyLocation(false)}>
@@ -115,7 +103,7 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
       <label>Destination</label>
       <div className="ac-wrap">
         <input value={form.destination} onChange={set('destination')} required autoComplete="off"
-               placeholder="Type a place — suggestions will appear" />
+               placeholder="Enter a place — suggestions will appear" />
         {sugList('destination')}
       </div>
       <label>Departure date &amp; time</label>
