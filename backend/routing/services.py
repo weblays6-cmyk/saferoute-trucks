@@ -28,8 +28,14 @@ class BadInput(ServiceError):
     """The user's input is the problem (e.g. location not found). The API returns 400."""
 
 
-def _get_with_retry(url, params, headers=None, attempts=3):
-    """GET request that retries temporary errors (503 etc.) after 1s, then 2s."""
+def _get_with_retry(url, params, headers=None, attempts=5):
+    """GET that rides out temporary errors, especially 429 rate limits.
+
+    Free weather APIs enforce per-minute/per-hour quotas that reset on their
+    own, so a 429 is worth waiting on: back off 1s, 2s, 4s, 8s (and honour a
+    Retry-After header, capped at 20s). Other retryable statuses (5xx) use the
+    same schedule. Non-retryable responses return immediately.
+    """
     last = None
     for attempt in range(attempts):
         try:
@@ -37,10 +43,15 @@ def _get_with_retry(url, params, headers=None, attempts=3):
             if r.status_code not in RETRY_STATUS:
                 return r
             last = requests.HTTPError(f"{r.status_code} error from {url}")
+            wait = 2 ** attempt
+            retry_after = (getattr(r, "headers", None) or {}).get("Retry-After")
+            if retry_after and retry_after.isdigit():
+                wait = max(wait, min(int(retry_after), 20))
         except (requests.ConnectionError, requests.Timeout) as exc:
             last = exc
+            wait = 2 ** attempt
         if attempt < attempts - 1:
-            time.sleep(2 ** attempt)
+            time.sleep(wait)
     raise last
 
 
