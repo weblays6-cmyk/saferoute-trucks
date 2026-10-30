@@ -1,4 +1,5 @@
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -9,12 +10,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-)7ka#ug-5+e412cy97sf8m2!*^yyh4pse4bks+!=dvx16gm)8-'
-
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = []
+# Production reads these from environment variables (set on Render);
+# local development keeps working with the defaults below.
+SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-)7ka#ug-5+e412cy97sf8m2!*^yyh4pse4bks+!=dvx16gm)8-')
+DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+ALLOWED_HOSTS = [h for h in os.environ.get('ALLOWED_HOSTS', '*').split(',') if h]
 
 
 # Application definition

@@ -34,6 +34,14 @@ export default function RouteCards({ result, selectedRouteId, onSelectRoute }) {
                 <span key={k}><i style={{ background: RISK_COLORS[k] }} />{RISK_LABELS[k]} {v} mi</span>
               ))}
             </div>
+            {(() => {
+              const worst = [...r.checkpoints].sort((a, b) => b.risk_level - a.risk_level)[0]
+              return worst && worst.risk_level > 0 ? (
+                <div className="worst">Worst point: Mile {worst.mile} — wind {worst.wind_mph} mph
+                  {worst.rain_in_hr > 0 ? `, rain ${worst.rain_in_hr} in/hr` : ''}
+                  {worst.snow_in_hr > 0 ? `, snow ${worst.snow_in_hr} in/hr` : ''} ({RISK_LABELS[worst.risk]})</div>
+              ) : <div className="worst clear">No risky checkpoints on this route</div>
+            })()}
             {s.recommended && s.reason && <p className="reason">Why: {s.reason}</p>}
           </div>
         )
