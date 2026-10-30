@@ -7,6 +7,8 @@ import requests
 from django.core.cache import cache
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+PHOTON_URL = "https://photon.komoot.io/api/"
+GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
@@ -56,8 +58,69 @@ def _get_with_retry(url, params, headers=None, attempts=5):
 
 
 # ---------------------------------------------------------------- Geocoding
+def _nominatim_geocode(query):
+    r = requests.get(
+        NOMINATIM_URL,
+        params={"q": query, "format": "json", "limit": 1},
+        headers=HEADERS,
+        timeout=TIMEOUT,
+    )
+    r.raise_for_status()
+    data = r.json()
+    if not data:
+        return None
+    time.sleep(1)  # respect Nominatim's 1 request/second limit
+    return {
+        "name": data[0]["display_name"],
+        "lat": float(data[0]["lat"]),
+        "lon": float(data[0]["lon"]),
+    }
+
+
+def _photon_geocode(query):
+    r = requests.get(
+        PHOTON_URL,
+        params={"q": query, "limit": 1},
+        headers=HEADERS,
+        timeout=TIMEOUT,
+    )
+    r.raise_for_status()
+    features = r.json().get("features") or []
+    if not features:
+        return None
+    f = features[0]
+    lon, lat = f["geometry"]["coordinates"]
+    props = f.get("properties", {})
+    parts = [props.get("name"), props.get("city") or props.get("district"),
+             props.get("state"), props.get("country")]
+    name = ", ".join(x for i, x in enumerate(parts) if x and x not in parts[:i])
+    return {"name": name or query, "lat": float(lat), "lon": float(lon)}
+
+
+def _openmeteo_geocode(query):
+    r = requests.get(
+        GEOCODING_URL,
+        params={"name": query, "count": 1, "language": "en", "format": "json"},
+        headers=HEADERS,
+        timeout=TIMEOUT,
+    )
+    r.raise_for_status()
+    results = r.json().get("results") or []
+    if not results:
+        return None
+    x = results[0]
+    parts = [x.get("name"), x.get("admin1"), x.get("country")]
+    name = ", ".join(part for part in parts if part)
+    return {"name": name or query, "lat": float(x["latitude"]), "lon": float(x["longitude"])}
+
+
 def geocode(query):
-    """Place name -> {"name", "lat", "lon"} using Nominatim."""
+    """Place name -> {"name", "lat", "lon"}.
+
+    Tries Nominatim, then Photon, then Open-Meteo Geocoding. The free
+    geocoders rate-limit shared/hosted IPs unpredictably (HTTP 429), so the
+    fallback chain keeps the app working when one provider refuses.
+    """
     query = query.strip()
     if not query:
         raise BadInput("Location is empty")
@@ -67,29 +130,22 @@ def geocode(query):
     if hit:
         return hit
 
-    try:
-        r = requests.get(
-            NOMINATIM_URL,
-            params={"q": query, "format": "json", "limit": 1},
-            headers=HEADERS,
-            timeout=TIMEOUT,
-        )
-        r.raise_for_status()
-        data = r.json()
-    except (requests.RequestException, ValueError) as exc:
-        raise ServiceError(f"Geocoding service failed: {exc}") from exc
+    answered = False
+    last_error = None
+    for finder in (_nominatim_geocode, _photon_geocode, _openmeteo_geocode):
+        try:
+            result = finder(query)
+        except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as exc:
+            last_error = exc
+            continue
+        answered = True
+        if result:
+            cache.set(key, result, 24 * 3600)
+            return result
 
-    if not data:
+    if answered or last_error is None:
         raise BadInput(f"Could not find location: '{query}'")
-
-    result = {
-        "name": data[0]["display_name"],
-        "lat": float(data[0]["lat"]),
-        "lon": float(data[0]["lon"]),
-    }
-    cache.set(key, result, 24 * 3600)
-    time.sleep(1)  # respect Nominatim's 1 request/second limit
-    return result
+    raise ServiceError(f"Geocoding service failed: {last_error}") from last_error
 
 
 # ------------------------------------------------------------------ Routing

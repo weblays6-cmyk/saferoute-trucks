@@ -159,3 +159,47 @@ def test_weather_gives_service_error_after_all_retries_fail(monkeypatch):
     monkeypatch.setattr("routing.services.requests.get", lambda *a, **k: FakeResponse({}, status=503))
     with pytest.raises(services.ServiceError):
         services.fetch_weather([(1.0, 2.0)], datetime(2026, 1, 1).date(), datetime(2026, 1, 1).date())
+
+def test_geocode_uses_nominatim_first(monkeypatch):
+    seen = []
+
+    def fake_get(url, params=None, **kwargs):
+        seen.append(url)
+        return FakeResponse([{"display_name": "Dallas, Texas, United States",
+                              "lat": "32.78", "lon": "-96.80"}])
+
+    monkeypatch.setattr("routing.services.time.sleep", lambda s: None)
+    monkeypatch.setattr("routing.services.requests.get", fake_get)
+    result = services.geocode("Dallas, TX")
+    assert result["lat"] == 32.78 and result["lon"] == -96.80
+    assert seen == [services.NOMINATIM_URL]
+
+
+def test_geocode_falls_back_to_photon_when_nominatim_fails(monkeypatch):
+    def fake_get(url, params=None, **kwargs):
+        if url == services.NOMINATIM_URL:
+            return FakeResponse({}, status=429)
+        if url == services.PHOTON_URL:
+            return FakeResponse({"features": [{
+                "geometry": {"coordinates": [-96.80, 32.78]},
+                "properties": {"name": "Dallas", "state": "Texas", "country": "United States"},
+            }]})
+        raise AssertionError("unexpected url " + url)
+
+    monkeypatch.setattr("routing.services.requests.get", fake_get)
+    result = services.geocode("Dallas, TX")
+    assert result == {"name": "Dallas, Texas, United States", "lat": 32.78, "lon": -96.80}
+
+
+def test_geocode_bad_input_when_no_provider_finds_place(monkeypatch):
+    def fake_get(url, params=None, **kwargs):
+        if url == services.NOMINATIM_URL:
+            return FakeResponse([])
+        if url == services.PHOTON_URL:
+            return FakeResponse({"features": []})
+        return FakeResponse({})
+
+    monkeypatch.setattr("routing.services.time.sleep", lambda s: None)
+    monkeypatch.setattr("routing.services.requests.get", fake_get)
+    with pytest.raises(services.BadInput):
+        services.geocode("Nowhere Land XYZ")
