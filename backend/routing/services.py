@@ -267,7 +267,7 @@ def _fetch_batch(locations, start_date, end_date):
         "end_date": end_date.isoformat(),
     }
     try:
-        r = _get_with_retry(OPEN_METEO_URL, params)
+        r = _get_with_retry(OPEN_METEO_URL, params, attempts=3)  # fail fast: MET Norway fallback waits behind this
         if r.status_code == 400:
             reason = r.json().get("reason", "bad request")
             raise ServiceError(f"Weather request rejected: {reason}")
