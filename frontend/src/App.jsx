@@ -38,6 +38,8 @@ export default function App() {
   const [error, setError] = useState('')
   const [journeyMode, setJourneyMode] = useState(false)
   const reroutingRef = useRef(false)
+  const coordsRef = useRef({})   // GPS name<->exact-coords pairing (TripForm sets, runTrip resolves)
+  const labelsRef = useRef({ from: '', to: '' })  // display names for the journey bar
 
   // Travel Activity: searches, journeys and reroutes, saved on this device.
   const [history, setHistory] = useState(() => {
@@ -64,17 +66,25 @@ export default function App() {
   async function runTrip(overrides = {}) {
     const f = { ...form, ...overrides }
     setForm(f)
+    labelsRef.current = { from: f.origin, to: f.destination }
+    // GPS-set fields display a NAME but must route from the exact pair.
+    // Resolve on a COPY: f itself stays the display values in the form.
+    const send = { ...f }
+    const oc = coordsRef.current.origin
+    if (oc && (f.origin || '').trim() === oc.name) send.origin = oc.coords
+    const dc = coordsRef.current.destination
+    if (dc && (f.destination || '').trim() === dc.name) send.destination = dc.coords
     setLoading(true); setError('')
     scrollToMap()
     try {
       const data = await analyzeTrip({
-        origin: f.origin, destination: f.destination,
+        origin: send.origin, destination: send.destination,
         departureLocal: f.departure, loadLb: f.loadLb,
         intervalMiles: f.interval || null,
       })
       setResult(data)
       const rec = data.routes.find((r) => r.id === data.recommended_route_id)
-      addHistory({ type: 'search', from: data.origin.name, to: data.destination.name,
+      addHistory({ type: 'search', from: f.origin, to: f.destination,
                    routeLabel: rec?.label, miles: rec?.distance_miles })
       setSelectedRouteId(data.recommended_route_id)  // start by showing the winning route's checkpoints
       setHeatHour(0)
@@ -92,7 +102,10 @@ export default function App() {
   // Departure quick chips (Now / Today / Tomorrow): set the time instantly —
   // and if a result is already showing, re-run with it right away.
   function quickDepart(local) {
-    if (result) runTrip({ departure: local })
+    // Victor: tapping Now/Today/Tomorrow with both places filled must run
+    // the search right away, not just change the clock.
+    if ((form.origin || '').trim() && (form.destination || '').trim()) runTrip({ departure: local })
+    else if (result) runTrip({ departure: local })
     else setForm((f) => ({ ...f, departure: local }))
   }
 
@@ -187,7 +200,7 @@ export default function App() {
       )}
       <div className="layout" id="planner">
         <div className="left">
-          <TripForm form={form} setForm={setForm} onSubmit={onSubmit} loading={loading} onQuickDepart={quickDepart} />
+          <TripForm form={form} setForm={setForm} onSubmit={onSubmit} loading={loading} onQuickDepart={quickDepart} coordsRef={coordsRef} />
           {result && (
             <div className="panel heat">
               <h2>Weather Heatmap</h2>
@@ -218,7 +231,7 @@ export default function App() {
         <div className="centre" ref={mapAnchorRef}>
           <MapView result={result} selectedRouteId={selectedRoute?.id}
                    onSelectRoute={onSelectRoute} showHeat={showHeat} heatHour={heatHour}
-                   onReroute={onReroute} onJourneyMode={setJourneyMode}
+                   onReroute={onReroute} onJourneyMode={setJourneyMode} labelsRef={labelsRef}
                    onJourneyEvent={addHistory}
                    editSignalRef={editSignalRef}
                    onEditTrip={(from, to) => { editSignalRef.current += 1; runTrip({ origin: from, destination: to }) }} />

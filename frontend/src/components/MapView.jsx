@@ -206,13 +206,19 @@ function followVehicle(J, map, pos) {
   }
 }
 
-export default function MapView({ result, selectedRouteId, onSelectRoute, showHeat, heatHour, onReroute, onJourneyMode, onJourneyEvent, onEditTrip, editSignalRef }) {
+export default function MapView({ result, selectedRouteId, onSelectRoute, showHeat, heatHour, onReroute, onJourneyMode, onJourneyEvent, onEditTrip, editSignalRef, labelsRef }) {
   const mapRef = useRef(null)
   const layerRef = useRef(null)
   const heatRef = useRef(null)
   const lastResultRef = useRef(null)
   const locateRef = useRef(null)
   const journeyRef = useRef(null)
+  // The backend sometimes names a GPS origin with the raw coordinate pair
+  // (its reverse lookup is rate-limited); the form's display name wins.
+  const prettyName = (name, label) => {
+    const isCoords = /^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$/.test((name || '').trim())
+    return isCoords && label && !/^-?\d/.test(label.trim()) ? label : name
+  }
   const syncRef = useRef({}) // latest {result, selectedRouteId} for startLive's fallback
   const journeyUiRef = useRef({})
   const rerouteRef = useRef(onReroute)
@@ -343,6 +349,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     const LocateControl = L.Control.extend({
       onAdd() {
         const div = L.DomUtil.create('div', 'leaflet-bar leaflet-control locate-control')
+        div.style.display = 'none' // Re-centre (below) is the single location button in every mode
         div.innerHTML = '<a href="#" title="Show my current location (GPS)" role="button" aria-label="Show my current location">◎</a>'
         L.DomEvent.on(div, 'click', (e) => {
           L.DomEvent.preventDefault(e)
@@ -552,16 +559,29 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#0b7285" stroke-width="2">' +
           '<circle cx="12" cy="12" r="6.5"/><circle cx="12" cy="12" r="1.6" fill="#0b7285" stroke="none"/>' +
           '<path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></button>'
-        div.style.display = 'none'
+        // Victor: this button must exist in EVERY mode, Google-Maps style -
+        // it is the one "take me to where I am" control on the map.
         L.DomEvent.disableClickPropagation(div)
         L.DomEvent.disableScrollPropagation(div)
         div.querySelector('.recenter-btn').addEventListener('click', () => {
           const map = mapRef.current
-          if (map && J._lastPos) {
+          if (!map) return
+          if (J._lastPos) {
             J.followLock = true // Google-style: camera stays locked on the driver until they drag the map
             map.setBearing?.(0) // re-centre also brings north back up
             map.setView(J._lastPos, 17, { animate: true })
+            return
           }
+          // Planning mode: ask GPS and fly to the user, like Google Maps.
+          navigator.geolocation?.getCurrentPosition(
+            (pos) => {
+              cachePos(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy)
+              drawMyLocation(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, true)
+              map.setView([pos.coords.latitude, pos.coords.longitude], 16, { animate: true })
+            },
+            () => { L.popup().setLatLng(map.getCenter()).setContent('Location unavailable — please allow location permission in your browser.').openOn(map) },
+            { timeout: 10000, maximumAge: 300000 }
+          )
         })
         journeyUiRef.current.recenter = div
         return div
@@ -650,8 +670,8 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (!ui) return
       if (ui.banner) ui.banner.root.style.display = 'none'
       if (ui.panel) ui.panel.style.display = 'none'
-      if (ui.recenter) ui.recenter.style.display = 'none'
-      if (ui.locate) ui.locate.style.display = 'block'
+      if (ui.recenter) ui.recenter.style.display = 'block' // stays in every mode now
+      if (ui.locate) ui.locate.style.display = 'none' // Re-centre is the single location button
       if (ui.btns) ui.btns.style.display = 'block'
     }
     J.showUi = showJourneyUi; J.hideUi = hideJourneyUi
@@ -723,7 +743,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         const sel = result?.routes?.find((r) => r.id === selectedRouteId) || result?.routes?.[0]
         if (sel) {
           J.route = sel
-          J.meta = { from: result.origin.name, to: result.destination.name,
+          J.meta = { from: prettyName(result.origin.name, labelsRef?.current?.from), to: prettyName(result.destination.name, labelsRef?.current?.to),
                      destLat: result.destination.lat, destLon: result.destination.lon }
         }
       }
@@ -990,7 +1010,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         J.hideUi?.()
       }
       J.meta = result ? {
-        from: result.origin.name, to: result.destination.name,
+        from: prettyName(result.origin.name, labelsRef?.current?.from), to: prettyName(result.destination.name, labelsRef?.current?.to),
         destLat: result.destination.lat, destLon: result.destination.lon,
       } : null
       J.routesMeta = result ? result.routes.map((r) => ({ id: r.id, label: r.label })) : null

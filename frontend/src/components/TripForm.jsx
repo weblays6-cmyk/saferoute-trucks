@@ -16,9 +16,18 @@ async function reverseGeocode(lat, lon) {
     const suburb = a.suburb && !/^ward\b/i.test(a.suburb) ? a.suburb : ''
     const city = a.city || a.town || a.county || ''
     const parts = [...new Set([area, suburb, city, a.state].filter(Boolean))].slice(0, 3)
-    return parts.join(', ') || d.display_name?.split(',').slice(0, 3).join(',') || `${lat}, ${lon}`
+    const nm = parts.join(', ') || d.display_name?.split(',').slice(0, 3).join(',')
+    if (nm) return nm
+    throw new Error('no name')
   } catch {
-    return `${lat}, ${lon}`
+    // Nominatim busy - BigDataCloud's free client reverse API as second try.
+    try {
+      const r2 = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`)
+      const d2 = await r2.json()
+      const parts2 = [...new Set([d2.locality, d2.city, d2.principalSubdivision].filter(Boolean))].slice(0, 3)
+      if (parts2.length) return parts2.join(', ')
+    } catch {}
+    return 'Current location'
   }
 }
 
@@ -80,8 +89,12 @@ const FAMOUS = [
   { name: 'Grand Canyon South Rim, AZ', lat: 36.0619, lon: -112.1077 },
 ]
 
-export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepart }) {
-  const set = (key) => (e) => { setForm({ ...form, [key]: e.target.value }); suggest(key, e.target.value) }
+export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepart, coordsRef }) {
+  const set = (key) => (e) => {
+    // Typing over a GPS-set field breaks the name<->coords pairing.
+    if ((key === 'origin' || key === 'destination') && coordsRef?.current) delete coordsRef.current[key]
+    setForm({ ...form, [key]: e.target.value }); suggest(key, e.target.value)
+  }
   const [gpsMsg, setGpsMsg] = useState('')
 
   // Place predictions (Google-Maps style): as the user types, Nominatim suggests
@@ -122,6 +135,7 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
     }, 350)
   }
   function pick(field, item) {
+    if (coordsRef?.current) delete coordsRef.current[field]
     setForm((f) => ({ ...f, [field]: item.display_name.split(',').slice(0, 3).join(',') }))
     setSug({ field: null, items: [], local: [] })
   }
@@ -163,6 +177,7 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
   // when we know where they are, otherwise popular trucking cities. Tapping
   // one fills the field - nothing is ever filled without the user's tap.
   function pickQuick(field, name) {
+    if (coordsRef?.current) delete coordsRef.current[field]
     setForm((f) => ({ ...f, [field]: name }))
     setSug({ field: null, items: [], local: [] })
     setFocusField(null)
@@ -245,6 +260,9 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
         const { latitude, longitude } = pos.coords
         setMyCoords({ lat: latitude, lon: longitude })
         const name = await reverseGeocode(latitude, longitude)
+        // The field shows the NAME; the exact GPS pair travels separately
+        // so the backend routes from the true spot, not a re-geocoded name.
+        if (coordsRef) coordsRef.current.origin = { coords: `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`, name }
         setForm((f) => ({ ...f, origin: name }))
         setGpsMsg(`Current location set: ${name}`)
       },
@@ -270,7 +288,10 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
       {gpsMsg && <div className="gps-msg">{gpsMsg}</div>}
       <div className="swaprow">
         <button type="button" className="swap-btn" title="Swap start and destination"
-          onClick={() => setForm({ ...form, origin: form.destination, destination: form.origin })}>
+          onClick={() => {
+            if (coordsRef) { const c = coordsRef.current.origin; coordsRef.current.origin = coordsRef.current.destination; coordsRef.current.destination = c }
+            setForm({ ...form, origin: form.destination, destination: form.origin })
+          }}>
           ⇅ Swap
         </button>
       </div>

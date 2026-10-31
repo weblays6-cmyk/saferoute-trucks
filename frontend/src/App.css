@@ -561,3 +561,15 @@ header { padding: 2px 2px 10px; }
   background: rgba(0, 200, 150, .14); color: #34d399; border: 1px solid rgba(0, 200, 150, .4);
   border-radius: 999px; box-shadow: none; }
 .form .swap-btn:hover:not(:disabled) { transform: none; box-shadow: none; background: rgba(0, 200, 150, .22); }
+
+/* Victor: mobile journey card must be SMALLER - it covered half the map.
+   ETA stays on ONE line ("229 min"), tighter rows everywhere. */
+@media (max-width: 640px) {
+  .navbottom { padding: 10px 12px; border-radius: 16px; }
+  .nb-etarow .jeta { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+  .jfromto input { padding: 7px 9px; font-size: 13px; }
+  .jfromto .jswap { width: 30px; height: 30px; }
+  .jchips button { padding: 3px 10px; font-size: 12px; }
+  .jshare, .jvoice, .jend { padding: 8px 10px; font-size: 13px; }
+  .jstat { font-size: 11.5px; line-height: 1.45; }
+}
