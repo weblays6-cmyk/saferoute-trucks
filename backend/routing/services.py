@@ -1,5 +1,6 @@
 import hashlib
 import math
+import re
 import time
 from datetime import datetime, timezone
 
@@ -7,6 +8,7 @@ import requests
 from django.core.cache import cache
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
 PHOTON_URL = "https://photon.komoot.io/api/"
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
@@ -116,6 +118,42 @@ def _openmeteo_geocode(query):
     return {"name": name or query, "lat": float(x["latitude"]), "lon": float(x["longitude"])}
 
 
+_COORDS_RE = re.compile(r"^(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)$")
+
+
+def _coords_from_query(query):
+    """'17.48866, 78.45155' -> {"name", "lat", "lon"} or None.
+
+    GPS buttons and reroutes hand the backend a raw coordinate pair.
+    Sending that to the place-name geocoders only works while Nominatim
+    happens to answer (it parses coordinates; Photon/Open-Meteo do not),
+    so coordinate input must be recognised directly - never via the
+    flaky text-search chain. The display name comes from a reverse
+    lookup; if that fails the coordinates themselves are the name.
+    """
+    m = _COORDS_RE.match(query)
+    if not m:
+        return None
+    lat, lon = float(m.group(1)), float(m.group(2))
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    name = query
+    try:
+        r = _get_with_retry(
+            NOMINATIM_REVERSE_URL,
+            {"lat": lat, "lon": lon, "format": "json", "zoom": 18},
+            headers=HEADERS, attempts=3,
+        )
+        r.raise_for_status()
+        display = (r.json() or {}).get("display_name")
+        if display:
+            name = display
+        time.sleep(1)  # respect Nominatim's 1 request/second limit
+    except Exception:
+        pass  # a name is cosmetic here; the coordinates are what matter
+    return {"name": name, "lat": lat, "lon": lon}
+
+
 def geocode(query):
     """Place name -> {"name", "lat", "lon"}.
 
@@ -126,6 +164,12 @@ def geocode(query):
     query = query.strip()
     if not query:
         raise BadInput("Location is empty")
+
+    coords = _coords_from_query(query)
+    if coords is not None:
+        key = "geo:" + hashlib.md5(query.lower().encode()).hexdigest()
+        cache.set(key, coords, 24 * 3600)
+        return coords
 
     key = "geo:" + hashlib.md5(query.lower().encode()).hexdigest()
     hit = cache.get(key)

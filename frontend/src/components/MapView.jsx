@@ -946,9 +946,13 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     const sel = result?.routes.find((r) => r.id === selectedRouteId) || result?.routes[0] || null
     const isNewResult = lastResultRef.current !== result
     if (J) {
+      // ~5 km slack: re-geocoding a city NAME (every reroute does) can land
+      // kilometres from the first answer depending on which free provider
+      // replies - with 111 m slack a reroute looked like a brand-new search
+      // and the journey reset to the home view (Victor's recording).
       const sameDestination = J.meta && result &&
-        Math.abs(J.meta.destLat - result.destination.lat) < 0.001 &&
-        Math.abs(J.meta.destLon - result.destination.lon) < 0.001
+        Math.abs(J.meta.destLat - result.destination.lat) < 0.05 &&
+        Math.abs(J.meta.destLon - result.destination.lon) < 0.05
       const editedTrip = (editSignalRef?.current || 0) !== (J.lastEditSeen || 0)
       J.lastEditSeen = editSignalRef?.current || 0
       if (J.mode === 'live' && isNewResult && editedTrip && sel) {

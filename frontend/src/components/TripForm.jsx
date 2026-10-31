@@ -271,7 +271,7 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
       <div className="swaprow">
         <button type="button" className="swap-btn" title="Swap start and destination"
           onClick={() => setForm({ ...form, origin: form.destination, destination: form.origin })}>
-          ⇅ Swap start &amp; destination
+          ⇅ Swap
         </button>
       </div>
       <label>Destination</label>
