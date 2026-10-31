@@ -510,3 +510,22 @@ header { padding: 2px 2px 10px; }
   .navbottom .jstat { font-size: 10.5px; margin-top: 4px; line-height: 1.35; }
   .navbottom .jwarn { font-size: 10.5px; margin-top: 2px; line-height: 1.35; }
 }
+
+/* Re-centre button (journey only) */
+.recenter-btn { width: 46px; height: 46px; border-radius: 50%; border: none; background: #ffffff;
+  color: #0f766e; font-size: 24px; line-height: 1; cursor: pointer;
+  box-shadow: 0 4px 14px rgba(2, 32, 36, .35); }
+.recenter-btn:active { transform: scale(.94); }
+
+/* Base-map switcher card (Light / Dark / Satellite) */
+.basectl { display: flex; gap: 2px; background: rgba(4, 32, 36, .88); padding: 3px;
+  border-radius: 12px; box-shadow: 0 4px 14px rgba(2, 32, 36, .35); }
+.basectl button { display: flex; flex-direction: column; align-items: center; gap: 0;
+  min-width: 52px; padding: 5px 6px 4px; border: none; border-radius: 9px; cursor: pointer;
+  background: transparent; color: #cbd5e1; font-size: 15px; line-height: 1.15; }
+.basectl button span { font-size: 9.5px; font-weight: 600; letter-spacing: .02em; }
+.basectl button.on { background: #00c896; color: #052e22; }
+@media (max-width: 640px) {
+  .basectl button { min-width: 44px; padding: 4px 4px 3px; font-size: 13px; }
+  .basectl button span { font-size: 8.5px; }
+}

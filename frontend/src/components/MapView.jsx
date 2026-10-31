@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet.heat'
+import 'leaflet-rotate' // two-finger map rotation (Victor's ask)
 
 export const RISK_COLORS = {
   LOW: '#22c55e', MODERATE: '#eab308', HIGH: '#f97316', SEVERE: '#ef4444', NO_TRAVEL: '#991b1b',
@@ -225,7 +226,14 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
   useEffect(() => {
     if (mapRef.current) return
     const bases = makeBaseLayers()
-    mapRef.current = L.map('saferoute-map', { layers: [bases.light], preferCanvas: true, fadeAnimation: false }).setView([34.1, -97.1], 6)
+    let savedBase = 'light'
+    try { savedBase = localStorage.getItem('saferoute_base') || 'light' } catch {}
+    if (!bases[savedBase]) savedBase = 'light'
+    mapRef.current = L.map('saferoute-map', {
+      layers: [bases[savedBase]], preferCanvas: true, fadeAnimation: false,
+      rotate: true, touchRotate: true, // twist with two fingers to rotate the map
+    }).setView([34.1, -97.1], 6)
+    window.__srMap = mapRef.current // debug/testing handle
     // If OpenStreetMap tiles keep failing (throttling / slow network), quietly
     // swap the Light base to Esri World Street Map so the map never stays grey.
     const esriStreet = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
@@ -241,10 +249,30 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         esriStreet.setZIndex(0)
       }
     })
-    L.control.layers(
-      { '☀ Light': bases.light, '🌙 Dark': bases.dark, '🛰 Satellite': bases.satellite },
-      null, { collapsed: false, position: 'topright' }
-    ).addTo(mapRef.current)
+    // Base-map switcher as a small card of symbol buttons (Victor's ask):
+    // Light / Dark / Satellite, always visible - including mid-journey.
+    const BaseControl = L.Control.extend({
+      onAdd() {
+        const div = L.DomUtil.create('div', 'leaflet-control basectl')
+        const defs = [['light', '☀️', 'Light'], ['dark', '🌙', 'Dark'], ['satellite', '🛰️', 'Satellite']]
+        div.innerHTML = defs.map(([k, icon, label]) =>
+          `<button data-base="${k}" class="${k === savedBase ? 'on' : ''}" title="${label} map">${icon}<span>${label}</span></button>`).join('')
+        L.DomEvent.disableClickPropagation(div)
+        L.DomEvent.disableScrollPropagation(div)
+        div.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+          const k = b.dataset.base
+          const map = mapRef.current
+          Object.entries(bases).forEach(([key, layer]) => {
+            if (key === k) { if (!map.hasLayer(layer)) { map.addLayer(layer); layer.setZIndex?.(0) } }
+            else if (map.hasLayer(layer)) map.removeLayer(layer)
+          })
+          div.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b))
+          try { localStorage.setItem('saferoute_base', k) } catch {}
+        }))
+        return div
+      },
+    })
+    new BaseControl({ position: 'topright' }).addTo(mapRef.current)
     layerRef.current = L.layerGroup().addTo(mapRef.current)
     heatRef.current = L.layerGroup().addTo(mapRef.current)
     locateRef.current = L.layerGroup().addTo(mapRef.current)
@@ -398,8 +426,8 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           else { try { window.speechSynthesis?.cancel() } catch {} }
         })
         const markDirty = () => {
-          const dirty = J.meta && (fromInput.value.trim() !== J.meta.from && fromInput.value.trim() !== '' ||
-                                   toInput.value.trim() !== J.meta.to && toInput.value.trim() !== '')
+          const dirty = J.meta && ((fromInput.value.trim() !== J.meta.from && fromInput.value.trim() !== shortName(J.meta.from) && fromInput.value.trim() !== '') ||
+                                   (toInput.value.trim() !== J.meta.to && toInput.value.trim() !== shortName(J.meta.to) && toInput.value.trim() !== ''))
           applyBtn.style.display = dirty ? 'block' : 'none'
         }
         fromInput.addEventListener('input', markDirty)
@@ -414,6 +442,27 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       },
     })
     new BarControl({ position: 'bottomleft' }).addTo(mapRef.current)
+
+    // Re-centre button (Google-Maps style): visible only during a journey,
+    // jumps the camera back to the driver at street level.
+    const RecenterControl = L.Control.extend({
+      onAdd() {
+        const div = L.DomUtil.create('div', 'leaflet-control recenter-wrap')
+        div.innerHTML = '<button class="recenter-btn" title="Re-centre on me">⌖</button>'
+        div.style.display = 'none'
+        L.DomEvent.disableClickPropagation(div)
+        div.querySelector('.recenter-btn').addEventListener('click', () => {
+          const map = mapRef.current
+          if (map && J._lastPos) {
+            map.setBearing?.(0) // re-centre also brings north back up
+            map.setView(J._lastPos, Math.max(map.getZoom(), 17), { animate: true })
+          }
+        })
+        journeyUiRef.current.recenter = div
+        return div
+      },
+    })
+    new RecenterControl({ position: 'bottomright' }).addTo(mapRef.current)
 
     function setBanner({ arrow = '↑', dist = '', text = '', then = null, tone = '' } = {}) {
       const b = journeyUiRef.current?.banner
@@ -464,6 +513,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (!ui) return
       if (ui.banner) ui.banner.root.style.display = 'block'
       if (ui.panel) ui.panel.style.display = 'block'
+      if (ui.recenter) ui.recenter.style.display = 'block'
       if (ui.btns) ui.btns.style.display = 'none'
     }
     function hideJourneyUi() {
@@ -471,6 +521,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (!ui) return
       if (ui.banner) ui.banner.root.style.display = 'none'
       if (ui.panel) ui.panel.style.display = 'none'
+      if (ui.recenter) ui.recenter.style.display = 'none'
       if (ui.btns) ui.btns.style.display = 'block'
     }
     J.showUi = showJourneyUi; J.hideUi = hideJourneyUi
@@ -478,8 +529,8 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     function setNav() {
       const ui = journeyUiRef.current
       if (!ui || !J.meta) return
-      if (ui.fromInput && document.activeElement !== ui.fromInput) ui.fromInput.value = J.meta.from
-      if (ui.toInput && document.activeElement !== ui.toInput) ui.toInput.value = J.meta.to
+      if (ui.fromInput && document.activeElement !== ui.fromInput) ui.fromInput.value = shortName(J.meta.from)
+      if (ui.toInput && document.activeElement !== ui.toInput) ui.toInput.value = shortName(J.meta.to)
       if (ui.chips && J.routesMeta) {
         ui.chips.innerHTML = '<span>Route:</span>' + J.routesMeta.map((r) =>
           `<button data-rid="${r.id}" class="${J.route?.id === r.id ? 'on' : ''}">${r.label.replace('Route ', '')}</button>`).join('')
@@ -538,12 +589,16 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         return
       }
       J.mode = 'live'; J.playing = true; J.offCount = 0; J.rerouting = false; J.coolUntil = 0; J.joined = false
-      J.startChecked = false; J.startRerouted = false
+      J.startChecked = false; J.startRerouted = false; J.zoomedIn = false
+      if (J.lastPos) {
+        const m = mapRef.current
+        if (m) m.setView([J.lastPos.lat, J.lastPos.lon], Math.max(m.getZoom(), 17))
+      }
       showPanel(); setButtons()
       const ui = journeyUiRef.current
       ui.stat.textContent = 'Waiting for GPS signal… allow location access if asked.'
       const nmStart = nextManeuver(J.route, 0)
-      speak(`Starting navigation to ${shortName(J.meta?.to || 'your destination')}${nmStart ? '. ' + stepText(nmStart.step) : ''}`)
+      speak(`Starting navigation to ${shortName(J.meta?.to || 'your destination')}. Drive safe.${nmStart ? ' ' + stepText(nmStart.step) : ''}`)
       ui.warn.textContent = ''
       if (ui.eta) ui.eta.innerHTML = ''
       // Instant start, Google-Maps style: if we already know where the driver
@@ -583,6 +638,22 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         J.liveDot = L.marker(ll, { icon: vehicleIcon() }).addTo(map)
       }
       setVehicle(J.liveDot, ll, brg)
+      // Street-level camera like Google Maps: first fix of a journey zooms
+      // in on the driver instead of leaving the whole-route overview.
+      if (!J.zoomedIn && J.mode === 'live') {
+        J.zoomedIn = true
+        map.setView(ll, Math.max(map.getZoom(), 17))
+      }
+      // Movement estimate for voice gating: directions are spoken only
+      // while the vehicle is actually moving (Victor's rule).
+      const nowMs = Date.now()
+      if (J._lastPos && J._lastFixAt) {
+        const dM = J._lastPos.distanceTo(ll)
+        const dtS = Math.max(0.2, (nowMs - J._lastFixAt) / 1000)
+        J.moving = dM > 12 && (dM / dtS) > 0.8
+      }
+      if (pos.coords.speed != null && isFinite(pos.coords.speed)) J.moving = pos.coords.speed > 0.8
+      J._lastFixAt = nowMs
       J._lastPos = ll
       cachePos(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy)
       followVehicle(J, map, ll)
@@ -665,13 +736,13 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         setBanner({
           arrow: stepArrow(nm.step), dist: fmtDist(nm.step.mile - mileNow),
           text: stepText(nm.step),
-          then: nm.next ? `Then ${stepArrow(nm.next)} ${nm.next.name || ''}`.trim() : null,
+          then: nm.next ? `Then ${stepArrow(nm.next)} ${stepText(nm.next)}` : null,
         })
       }
       // Voice: announce each maneuver twice - once in good time (<=0.6 mi)
       // and once when close (<=0.15 mi). E.g. "In 0.5 miles, turn right
       // onto Main Road."
-      if (nm && J.mode) {
+      if (nm && J.mode && J.moving) {
         const remaining = nm.step.mile - mileNow
         if (J.voiceStep !== nm.step.mile) { J.voiceStep = nm.step.mile; J.voiceStage = 0 }
         if (remaining <= 0.6 && remaining > 0.15 && J.voiceStage < 1) {
@@ -733,7 +804,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         if (wasRerouting && journeyUiRef.current) {
           if (J.startRerouted) {
             const nm0 = nextManeuver(sel, 0)
-            if (nm0) J.speak?.(stepText(nm0.step))
+            if (nm0) J.speak?.('Drive safe. ' + stepText(nm0.step))
             J.startRerouted = false
           }
           journeyUiRef.current.warn.textContent = '✅ New route ready — follow the highlighted route.'
