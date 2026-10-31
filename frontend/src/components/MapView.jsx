@@ -31,6 +31,16 @@ function makeBaseLayers() {
   return { light, dark, satellite }
 }
 
+// Origin/destination pins drawn with pure CSS (Leaflet's default marker
+// images 404 in a Vite build and showed as broken-image boxes).
+function pinIcon(kind) {
+  return L.divIcon({
+    className: 'pin-wrap',
+    html: `<div class="pin ${kind}"><span></span></div>`,
+    iconSize: [30, 42], iconAnchor: [15, 40], popupAnchor: [0, -38],
+  })
+}
+
 // Distance from a point to the route (metres) + how far along the route the
 // nearest point is (fraction 0..1). Used for live off-route detection.
 function nearestOnRoute(route, latlng) {
@@ -186,6 +196,21 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     if (mapRef.current) return
     const bases = makeBaseLayers()
     mapRef.current = L.map('saferoute-map', { layers: [bases.light], preferCanvas: true, fadeAnimation: false }).setView([34.1, -97.1], 6)
+    // If OpenStreetMap tiles keep failing (throttling / slow network), quietly
+    // swap the Light base to Esri World Street Map so the map never stays grey.
+    const esriStreet = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+      attribution: 'Tiles © Esri — Source: Esri, DeLorme, NAVTEQ', keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
+    })
+    let osmErrors = 0, swapped = false
+    bases.light.on('tileerror', () => {
+      osmErrors += 1
+      if (osmErrors >= 8 && !swapped && mapRef.current?.hasLayer(bases.light)) {
+        swapped = true
+        mapRef.current.removeLayer(bases.light)
+        mapRef.current.addLayer(esriStreet)
+        esriStreet.setZIndex(0)
+      }
+    })
     L.control.layers(
       { '☀ Light': bases.light, '🌙 Dark': bases.dark, '🛰 Satellite': bases.satellite },
       null, { collapsed: false, position: 'topright' }
@@ -614,10 +639,11 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       r.geometry.forEach((p) => bounds.push(p))
     })
 
-    const pin = (loc, text) =>
-      L.marker([loc.lat, loc.lon]).addTo(layers).bindPopup(`<b>${text}</b><br>${loc.name || ''}`)
-    pin(result.origin, 'Origin')
-    pin(result.destination, 'Destination')
+    const pin = (loc, text, kind) =>
+      L.marker([loc.lat, loc.lon], { icon: pinIcon(kind) }).addTo(layers)
+        .bindPopup(`<b>${text}</b><br>${loc.name || ''}`)
+    pin(result.origin, 'Origin', 'from')
+    pin(result.destination, 'Destination', 'to')
 
     const selRoute = result.routes.find((r) => r.id === selectedRouteId) || result.routes[0]
     selRoute.checkpoints.forEach((c) => {
