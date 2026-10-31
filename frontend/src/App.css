@@ -621,3 +621,29 @@ header { padding: 2px 2px 10px; }
   font-weight: 700; font-size: 12.5px; padding: 7px 11px; border-radius: 999px; cursor: pointer;
   box-shadow: 0 2px 8px rgba(2,6,23,.35); }
 .quickshare-btn.on { background: #00c896; color: #04241c; border-color: #00c896; }
+
+/* Track page navigation mode: banner + bottom bar over the map, styled
+   like the driver's own Live Journey (2nd-image look Victor asked for). */
+.track-mapwrap { position: relative; max-width: 1100px; margin: 0 auto; }
+.track-page .track-map { max-width: none; margin: 0; }
+.track-page.nav-on { padding: 0; }
+.track-page.nav-on .track-mapwrap { max-width: none; }
+.track-page.nav-on .track-map { height: 100dvh; min-height: 100dvh; border-radius: 0; }
+.tnav-banner { position: absolute; top: 12px; left: 12px; right: 12px; z-index: 800;
+  display: flex; gap: 12px; align-items: flex-start; color: #fff;
+  background: linear-gradient(135deg, #065f46, #0b7285); border-radius: 16px;
+  padding: 13px 15px; box-shadow: 0 10px 26px rgba(2,6,23,.45); }
+.tnav-arrow { font-size: 34px; line-height: 1; min-width: 40px; text-align: center; }
+.tnav-dist { color: #5fdcde; font-weight: 800; font-size: 14px; letter-spacing: .4px; }
+.tnav-text { font-size: 19px; font-weight: 800; line-height: 1.25; }
+.tnav-then { font-size: 13px; opacity: .85; margin-top: 4px; border-top: 1px solid rgba(255,255,255,.25); padding-top: 5px; }
+.tnav-bar { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 800;
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(15,23,42,.95); border: 1px solid #334155; border-radius: 16px;
+  padding: 11px 13px; box-shadow: 0 10px 26px rgba(2,6,23,.5); }
+.tnav-eta { flex: 1; font-size: 14.5px; color: #cbd5e1; }
+.tnav-eta b { color: #5fdcde; font-size: 19px; }
+.tnav-recenter { width: 40px; height: 40px; border-radius: 50%; border: 0; background: #fff;
+  color: #0b7285; font-size: 19px; cursor: pointer; }
+.tnav-end { background: rgba(225,29,72,.16); color: #fda4af; border: 1px solid rgba(225,29,72,.5);
+  font-weight: 700; padding: 9px 14px; border-radius: 10px; cursor: pointer; font-size: 13.5px; }
