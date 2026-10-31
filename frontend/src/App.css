@@ -647,3 +647,10 @@ header { padding: 2px 2px 10px; }
   color: #0b7285; font-size: 19px; cursor: pointer; }
 .tnav-end { background: rgba(225,29,72,.16); color: #fda4af; border: 1px solid rgba(225,29,72,.5);
   font-weight: 700; padding: 9px 14px; border-radius: 10px; cursor: pointer; font-size: 13.5px; }
+
+/* Track page header: title + home button (back to the main SafeRoute page) */
+.track-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.track-head h2 { margin: 0; }
+.track-home { font-size: 21px; line-height: 1; text-decoration: none; flex: none;
+  background: #0b3542; border: 1px solid #1e5a6e; border-radius: 12px; padding: 8px 11px; }
+.track-home:active { background: #0e4a5c; }

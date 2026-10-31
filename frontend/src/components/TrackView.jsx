@@ -262,7 +262,10 @@ export default function TrackView({ id }) {
     <div className={navigating ? 'track-page nav-on' : 'track-page'}>
       {!navigating && (
         <div className="track-card">
-          <h2>🚛 SafeRoute — Live Trip</h2>
+          <div className="track-head">
+            <h2>🚛 SafeRoute — Live Trip</h2>
+            <a className="track-home" href="/" title="Go to the SafeRoute home page">🏠</a>
+          </div>
           {err && <p className="track-err">{err}</p>}
           {!err && !info && <p>Connecting…</p>}
           {info && (
