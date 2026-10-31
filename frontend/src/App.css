@@ -592,3 +592,26 @@ header { padding: 2px 2px 10px; }
 .jmin:hover { color: #e2e8f0; border-color: #475569; }
 .navbottom.min .jedit, .navbottom.min .jchips, .navbottom.min .jbar,
 .navbottom.min .jstat, .navbottom.min .jwarn { display: none !important; }
+
+/* Travel Activity: a planned trip is a one-tap re-plan. */
+.hist-click { cursor: pointer; border-radius: 10px; }
+.hist-click:hover { background: rgba(0, 200, 150, .08); }
+.hist-again { color: #34d399; font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+
+/* Track page: truck pin (SVG, never a broken image), viewer dot, ask card. */
+.truck-pin-wrap { background: none; border: none; }
+.truck-pin { position: relative; z-index: 2; filter: drop-shadow(0 3px 5px rgba(0,0,0,.45)); }
+.truck-pulse { position: absolute; left: 50%; top: 34px; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+  border-radius: 50%; background: rgba(225, 29, 72, .35); animation: truckpulse 1.8s ease-out infinite; z-index: 1; }
+@keyframes truckpulse { 0% { transform: scale(.35); opacity: .9; } 100% { transform: scale(1.25); opacity: 0; } }
+.me-dot-wrap { background: none; border: none; }
+.me-dot { width: 18px; height: 18px; border-radius: 50%; background: #2563eb; border: 3px solid #fff;
+  box-shadow: 0 1px 6px rgba(0,0,0,.5); }
+.track-ask { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.12);
+  display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; font-size: 14px; }
+.track-ask-btns { display: flex; gap: 8px; }
+.track-go { background: linear-gradient(90deg, #008080, #00c896); color: #fff; border: 0; font-weight: 700;
+  padding: 8px 14px; border-radius: 999px; cursor: pointer; font-size: 13.5px; }
+.track-stay, .track-retry { background: transparent; color: #a7f3d0; border: 1px solid rgba(255,255,255,.35);
+  padding: 8px 13px; border-radius: 999px; cursor: pointer; font-size: 13.5px; }
+.track-retry { padding: 3px 10px; margin-left: 6px; }

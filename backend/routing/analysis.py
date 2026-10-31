@@ -146,7 +146,10 @@ def run_analysis(origin_text, destination_text, departure, load_lb, interval_mil
     destination = services.geocode(destination_text)
     routes = _routes_or_bad_input((origin["lat"], origin["lon"]),
                                   (destination["lat"], destination["lon"]))
-    if routes[0]["distance_miles"] < 1:
+    if routes[0]["distance_miles"] < 0.25:
+        # Was < 1 mile, but the live-tracking page legitimately routes a
+        # viewer to a truck a few streets away (sub-mile hops are real
+        # trips); a true duplicate still routes to ~0 and is caught here.
         raise services.BadInput("Origin and destination are the same place.")
 
     # The same interval for every route keeps the comparison fair

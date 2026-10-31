@@ -288,12 +288,14 @@ export default function App() {
             {history.length === 0 && <p className="hist-empty">No activity yet — your trip searches, journeys and reroutes will appear here.</p>}
             <ul className="hist-list">
               {history.slice(0, 8).map((h, i) => (
-                <li key={i}>
+                <li key={i} className={h.type === 'search' ? 'hist-click' : ''}
+                    title={h.type === 'search' ? 'Tap to plan this trip again' : ''}
+                    onClick={h.type === 'search' ? () => runTrip({ origin: h.from, destination: h.to }) : undefined}>
                   <span className={`hist-ic ${h.type}`}>
                     {h.type === 'search' ? '🔎' : h.type === 'reroute' ? '⚠' : h.completed ? '🏁' : '🚚'}
                   </span>
                   <span className="hist-text">
-                    {h.type === 'search' && <>Trip planned: <b>{shortPlace(h.from)} → {shortPlace(h.to)}</b> — {h.routeLabel} recommended{h.miles ? `, ${h.miles} mi` : ''}</>}
+                    {h.type === 'search' && <>Trip planned: <b>{shortPlace(h.from)} → {shortPlace(h.to)}</b> — {h.routeLabel} recommended{h.miles ? `, ${h.miles} mi` : ''} <span className="hist-again">↻ plan again</span></>}
                     {h.type === 'reroute' && <>Went off route — <b>rerouted</b> from current location to {shortPlace(h.to)}</>}
                     {h.type === 'journey' && <>{h.mode === 'live' ? 'Live journey' : 'Demo drive'} on <b>{h.routeLabel}</b> — {h.completed ? 'completed 🎉' : `ended at ${Math.round((h.progress || 0) * 100)}%`}{h.miles ? ` of ${h.miles} mi` : ''}</>}
                     <span className="hist-time">{new Date(h.at).toLocaleString()}</span>
