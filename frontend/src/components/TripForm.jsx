@@ -1,16 +1,19 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 
 // Turn GPS coordinates into a readable place name (Nominatim reverse geocoding,
 // the same free service the backend uses). Falls back to the raw coordinates,
 // which the backend geocoder also accepts.
 async function reverseGeocode(lat, lon) {
   try {
-    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=12`)
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=16`)
     const d = await r.json()
     const a = d.address || {}
-    const place = a.city || a.town || a.village || a.suburb || a.county || ''
-    const name = [place, a.state].filter(Boolean).join(', ')
-    return name || d.display_name?.split(',').slice(0, 2).join(',') || `${lat}, ${lon}`
+    // Show the actual area the user is in, not just the city: suburb /
+    // neighbourhood first, then city, then state (Victor's ask).
+    const area = a.suburb || a.neighbourhood || a.village || a.hamlet || a.residential || ''
+    const city = a.city || a.town || a.county || ''
+    const parts = [...new Set([area, city, a.state].filter(Boolean))]
+    return parts.join(', ') || d.display_name?.split(',').slice(0, 3).join(',') || `${lat}, ${lon}`
   } catch {
     return `${lat}, ${lon}`
   }
@@ -53,30 +56,71 @@ function distMiles(aLat, aLon, bLat, bLon) {
 const POPULAR = ['Hyderabad, Telangana', 'Bengaluru, Karnataka', 'Chennai, Tamil Nadu',
   'Vijayawada, Andhra Pradesh', 'Dallas, TX', 'Oklahoma City, OK', 'Denver, CO']
 
+// Well-known places people actually navigate to (temples, landmarks, tourist
+// spots). Shown in the suggestion dropdown and matched while typing.
+const FAMOUS = [
+  { name: 'Charminar, Hyderabad', lat: 17.3616, lon: 78.4747 },
+  { name: 'Golconda Fort, Hyderabad', lat: 17.3833, lon: 78.4011 },
+  { name: 'Hussain Sagar, Hyderabad', lat: 17.4239, lon: 78.4738 },
+  { name: 'Ramoji Film City, Hyderabad', lat: 17.2543, lon: 78.6808 },
+  { name: 'Kanaka Durga Temple, Vijayawada', lat: 16.5152, lon: 80.6050 },
+  { name: 'Tirupati Balaji Temple, Tirupati', lat: 13.6288, lon: 79.4192 },
+  { name: 'Marina Beach, Chennai', lat: 13.0500, lon: 80.2824 },
+  { name: 'Lalbagh Botanical Garden, Bengaluru', lat: 12.9507, lon: 77.5848 },
+  { name: 'Vidhana Soudha, Bengaluru', lat: 12.9796, lon: 77.5907 },
+  { name: 'Mysore Palace, Mysuru', lat: 12.3052, lon: 76.6552 },
+  { name: 'Gateway of India, Mumbai', lat: 18.9220, lon: 72.8347 },
+  { name: 'India Gate, Delhi', lat: 28.6129, lon: 77.2295 },
+  { name: 'Times Square, New York', lat: 40.7580, lon: -73.9855 },
+  { name: 'Golden Gate Bridge, San Francisco', lat: 37.8199, lon: -122.4783 },
+  { name: 'Space Needle, Seattle', lat: 47.6205, lon: -122.3493 },
+  { name: 'Grand Canyon South Rim, AZ', lat: 36.0619, lon: -112.1077 },
+]
+
 export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepart }) {
   const set = (key) => (e) => { setForm({ ...form, [key]: e.target.value }); suggest(key, e.target.value) }
   const [gpsMsg, setGpsMsg] = useState('')
 
   // Place predictions (Google-Maps style): as the user types, Nominatim suggests
   // matching places; tapping one fills the field. Debounced, free, no API key.
-  const [sug, setSug] = useState({ field: null, items: [] })
+  const [sug, setSug] = useState({ field: null, items: [], local: [] })
   const [focusField, setFocusField] = useState(null)
   const [myCoords, setMyCoords] = useState(null)
   const sugTimer = useRef(null)
   function suggest(field, q) {
     clearTimeout(sugTimer.current)
-    if (!q || q.trim().length < 2) { setSug({ field: null, items: [] }); return }
+    if (!q || q.trim().length < 2) { setSug({ field: null, items: [], local: [] }); return }
+    // Instant matches from the built-in city + famous-places lists.
+    const ql = q.trim().toLowerCase()
+    const local = [...CITIES, ...FAMOUS]
+      .filter((c) => c.name.toLowerCase().includes(ql))
+      .slice(0, 3).map((c) => c.name)
+    setSug({ field, items: [], local })
     sugTimer.current = setTimeout(async () => {
       try {
-        const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&q=${encodeURIComponent(q)}`)
-        const items = await r.json()
-        setSug({ field, items })
-      } catch { setSug({ field: null, items: [] }) }
+        // Bias the search to the user's surroundings (viewbox) so "Guntur"
+        // finds Guntur, Andhra Pradesh - not a same-named village overseas -
+        // then order the results nearest-first when we know the position.
+        let url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&q=${encodeURIComponent(q)}`
+        if (myCoords) {
+          const { lat, lon } = myCoords
+          url += `&viewbox=${lon - 2.5},${lat + 2.5},${lon + 2.5},${lat - 2.5}&bounded=0`
+        }
+        const r = await fetch(url)
+        let items = await r.json()
+        if (myCoords) {
+          items = items
+            .map((it) => ({ it, d: distMiles(myCoords.lat, myCoords.lon, parseFloat(it.lat), parseFloat(it.lon)) }))
+            .sort((a, b) => a.d - b.d)
+            .map((x) => x.it)
+        }
+        setSug({ field, items: items.slice(0, 5), local })
+      } catch { setSug({ field, items: [], local }) } // keep local matches if the network search fails
     }, 350)
   }
   function pick(field, item) {
     setForm((f) => ({ ...f, [field]: item.display_name.split(',').slice(0, 3).join(',') }))
-    setSug({ field: null, items: [] })
+    setSug({ field: null, items: [], local: [] })
   }
   // Quick departure choices: Now = this minute; Today/Tomorrow keep the typed
   // time but jump the date. The parent re-runs the search immediately if a
@@ -97,8 +141,13 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
     if (onQuickDepart) onQuickDepart(local)
     else setForm((f) => ({ ...f, departure: local }))
   }
-  const sugList = (field) => sug.field === field && sug.items.length > 0 && (
+  const sugList = (field) => sug.field === field && (sug.items.length > 0 || sug.local.length > 0) && (
     <ul className="ac-list">
+      {sug.local.map((name) => (
+        <li key={'L' + name} onMouseDown={(e) => { e.preventDefault(); pickQuick(field, name) }}>
+          ⭐ {name}
+        </li>
+      ))}
       {sug.items.map((it) => (
         <li key={it.place_id} onMouseDown={(e) => { e.preventDefault(); pick(field, it) }}>
           📍 {it.display_name.split(',').slice(0, 3).join(',')}
@@ -112,31 +161,56 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
   // one fills the field - nothing is ever filled without the user's tap.
   function pickQuick(field, name) {
     setForm((f) => ({ ...f, [field]: name }))
-    setSug({ field: null, items: [] })
+    setSug({ field: null, items: [], local: [] })
     setFocusField(null)
   }
   const quickList = (field) => {
     if (focusField !== field || sug.field === field) return null
     if ((form[field] || '').trim().length >= 2) return null
-    let head, rows
+    const sections = []
+    // Recent searches first - places this user actually travelled to before.
+    try {
+      const hist = JSON.parse(localStorage.getItem('saferoute_history') || '[]')
+      const seen = new Set()
+      const recent = []
+      for (const h of hist) {
+        for (const nm of [h.to, h.from]) {
+          const short = (nm || '').split(',').slice(0, 2).join(',')
+          if (short && !seen.has(short) && short !== form[field]) { seen.add(short); recent.push(short) }
+        }
+        if (recent.length >= 4) break
+      }
+      if (recent.length) sections.push({ head: '🕘 Recent searches', icon: '🕘', rows: recent.map((name) => ({ name, note: '' })) })
+    } catch {}
+    // Nearby (or popular) places.
     if (myCoords) {
-      head = '📍 Nearby places'
-      rows = CITIES
+      const rows = CITIES
         .map((c) => ({ ...c, d: distMiles(myCoords.lat, myCoords.lon, c.lat, c.lon) }))
         .sort((a, b) => a.d - b.d)
         .slice(0, 5)
         .map((c) => ({ name: c.name, note: `${c.d < 1 ? '<1' : Math.round(c.d)} mi away` }))
+      sections.push({ head: '📍 Nearby places', icon: '📍', rows })
     } else {
-      head = '⭐ Popular places'
-      rows = POPULAR.map((name) => ({ name, note: '' }))
+      sections.push({ head: '⭐ Popular places', icon: '📍', rows: POPULAR.map((name) => ({ name, note: '' })) })
     }
+    // Famous / tourist places, nearest first when we know the position.
+    const famous = myCoords
+      ? FAMOUS.map((c) => ({ ...c, d: distMiles(myCoords.lat, myCoords.lon, c.lat, c.lon) }))
+          .sort((a, b) => a.d - b.d)
+          .map((c) => ({ name: c.name, note: `${Math.round(c.d)} mi away` }))
+      : FAMOUS.slice(0, 5).map((c) => ({ name: c.name, note: '' }))
+    sections.push({ head: '⭐ Famous places', icon: '⭐', rows: famous.slice(0, 5) })
     return (
       <ul className="ac-list">
-        <li className="ac-head">{head}</li>
-        {rows.map((r) => (
-          <li key={r.name} onMouseDown={(e) => { e.preventDefault(); pickQuick(field, r.name) }}>
-            📍 {r.name}{r.note && <span className="ac-dist">{r.note}</span>}
-          </li>
+        {sections.map((sec) => (
+          <Fragment key={sec.head}>
+            <li className="ac-head">{sec.head}</li>
+            {sec.rows.map((r) => (
+              <li key={sec.head + r.name} onMouseDown={(e) => { e.preventDefault(); pickQuick(field, r.name) }}>
+                {sec.icon} {r.name}{r.note && <span className="ac-dist">{r.note}</span>}
+              </li>
+            ))}
+          </Fragment>
         ))}
       </ul>
     )

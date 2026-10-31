@@ -50,6 +50,7 @@ export default function App() {
 
   // After Find is pressed, bring the map to the top of the screen (phone + PC)
   const mapAnchorRef = useRef(null)
+  const editSignalRef = useRef(0)
   const scrollToMap = () => requestAnimationFrame(() =>
     mapAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
 
@@ -215,7 +216,8 @@ export default function App() {
                    onSelectRoute={onSelectRoute} showHeat={showHeat} heatHour={heatHour}
                    onReroute={onReroute} onJourneyMode={setJourneyMode}
                    onJourneyEvent={addHistory}
-                   onEditTrip={(from, to) => runTrip({ origin: from, destination: to })} />
+                   editSignalRef={editSignalRef}
+                   onEditTrip={(from, to) => { editSignalRef.current += 1; runTrip({ origin: from, destination: to }) }} />
           {error && <div className="error">{error}</div>}
           {result?.warnings?.length > 0 && (
             <div className="warnings">{result.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}</div>

@@ -115,6 +115,9 @@ function stepArrow(st) {
   if (m.includes('right')) return '↱'
   return '↑'
 }
+function shortName(name) {
+  return String(name || '').split(',').slice(0, 2).join(',')
+}
 function stepText(st) {
   const name = st.name && st.name !== '-' ? st.name : ''
   const onto = name ? ` onto ${name}` : ''
@@ -176,7 +179,7 @@ function followVehicle(J, map, pos) {
   }
 }
 
-export default function MapView({ result, selectedRouteId, onSelectRoute, showHeat, heatHour, onReroute, onJourneyMode, onJourneyEvent, onEditTrip }) {
+export default function MapView({ result, selectedRouteId, onSelectRoute, showHeat, heatHour, onReroute, onJourneyMode, onJourneyEvent, onEditTrip, editSignalRef }) {
   const mapRef = useRef(null)
   const layerRef = useRef(null)
   const heatRef = useRef(null)
@@ -235,6 +238,8 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       mode: null, playing: false, t: 0, raf: null, truck: null, liveDot: null,
       watchId: null, offCount: 0, rerouting: false, route: null, meta: null,
       frac: 0, arrived: false,
+      voiceOn: (() => { try { return localStorage.getItem('saferoute_voice') !== '0' } catch { return true } })(),
+      voiceStep: null, voiceStage: 0,
     }
     journeyRef.current = J
 
@@ -296,23 +301,21 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     })
     new LocateControl({ position: 'bottomright' }).addTo(mapRef.current)
 
-    // ---- Journey controls (bottom-left): Live GPS journey + Demo drive.
+    // ---- Journey controls (bottom-left): Live GPS journey start button.
     const JourneyControl = L.Control.extend({
       onAdd() {
         const div = L.DomUtil.create('div', 'leaflet-control journey-control')
         div.innerHTML =
           '<div class="jbtns">' +
           '  <button class="jbtn live" disabled>📍 Start Live Journey</button>' +
-          '  <button class="jbtn demo" disabled>▶ Demo Drive</button>' +
           '</div>'
         L.DomEvent.disableClickPropagation(div)
         journeyUiRef.current = {
           ...journeyUiRef.current,
-          live: div.querySelector('.live'), demo: div.querySelector('.demo'),
+          live: div.querySelector('.live'),
           btns: div.querySelector('.jbtns'),
         }
         journeyUiRef.current.live.addEventListener('click', startLive)
-        journeyUiRef.current.demo.addEventListener('click', toggleDemo)
         return div
       },
     })
@@ -351,7 +354,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           '    <button class="japply" style="display:none">↻ Update trip</button>' +
           '  </div>' +
           '  <div class="jchips"></div>' +
-          '  <div class="nb-etarow"><span class="jeta"></span><button class="jend">✕ End</button></div>' +
+          '  <div class="nb-etarow"><span class="jeta"></span><button class="jvoice" title="Voice guidance on/off">🔊</button><button class="jend">✕ End</button></div>' +
           '  <div class="jbar"><div class="jfill"></div></div>' +
           '  <div class="jstat"></div>' +
           '  <div class="jwarn"></div>' +
@@ -366,8 +369,16 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           panel: root, fromInput, toInput,
           fill: div.querySelector('.jfill'), stat: div.querySelector('.jstat'),
           warn: div.querySelector('.jwarn'), eta: div.querySelector('.jeta'),
-          chips: div.querySelector('.jchips'),
+          chips: div.querySelector('.jchips'), voice: div.querySelector('.jvoice'),
         }
+        journeyUiRef.current.voice.textContent = J.voiceOn ? '🔊' : '🔇'
+        journeyUiRef.current.voice.addEventListener('click', () => {
+          J.voiceOn = !J.voiceOn
+          try { localStorage.setItem('saferoute_voice', J.voiceOn ? '1' : '0') } catch {}
+          journeyUiRef.current.voice.textContent = J.voiceOn ? '🔊' : '🔇'
+          if (J.voiceOn) speak('Voice guidance on')
+          else { try { window.speechSynthesis?.cancel() } catch {} }
+        })
         const markDirty = () => {
           const dirty = J.meta && (fromInput.value.trim() !== J.meta.from && fromInput.value.trim() !== '' ||
                                    toInput.value.trim() !== J.meta.to && toInput.value.trim() !== '')
@@ -397,6 +408,22 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       else b.then.style.display = 'none'
     }
     J.setBanner = setBanner
+
+    // ---------- VOICE GUIDANCE (Web Speech API, English) ----------
+    function speak(text) {
+      try {
+        if (!J.voiceOn || !('speechSynthesis' in window)) return
+        window.speechSynthesis.cancel()
+        const u = new SpeechSynthesisUtterance(text)
+        u.lang = 'en-US'; u.rate = 1.02
+        window.speechSynthesis.speak(u)
+      } catch {}
+    }
+    J.speak = speak
+    function spokenDist(mi) {
+      if (mi < 0.1) return `${Math.max(30, Math.round(mi * 5280 / 10) * 10)} feet`
+      return `${mi < 0.95 ? Math.round(mi * 20) / 20 : mi.toFixed(1)} miles`
+    }
 
     function showJourneyUi() {
       const ui = journeyUiRef.current
@@ -432,10 +459,8 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       const ui = journeyUiRef.current
       if (!ui) return
       const has = !!J.route
-      ui.live.disabled = !has || J.mode === 'demo'
-      ui.demo.disabled = !has || J.mode === 'live'
+      ui.live.disabled = !has || J.mode === 'live'
       ui.live.textContent = J.mode === 'live' ? '📍 Live Journey running…' : '📍 Start Live Journey'
-      ui.demo.textContent = J.mode === 'demo' ? (J.playing ? '⏸ Pause Demo' : '▶ Resume Demo') : '▶ Demo Drive'
     }
     J.setButtons = setButtons
 
@@ -454,13 +479,12 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     function endJourney() {
       if (J.mode && !J.arrived) {
         journeyEventRef.current?.({ type: 'journey', mode: J.mode,
-          progress: J.mode === 'demo' ? J.t : J.frac, completed: false,
+          progress: J.frac, completed: false,
           routeLabel: J.route?.label, miles: J.route?.distance_miles,
           from: J.meta?.from, to: J.meta?.to })
       }
       if (J.raf) cancelAnimationFrame(J.raf)
       if (J.watchId != null && navigator.geolocation) navigator.geolocation.clearWatch(J.watchId)
-      if (J.truck) { J.truck.remove(); J.truck = null }
       if (J.liveDot) { J.liveDot.remove(); J.liveDot = null }
       Object.assign(J, { mode: null, playing: false, t: 0, raf: null, watchId: null, offCount: 0, rerouting: false, frac: 0, arrived: false })
       J.bannerHold = false
@@ -471,58 +495,9 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     }
     J.end = endJourney
 
-    // ---------- DEMO DRIVE: simulated truck along the selected route ----------
-    function toggleDemo() {
-      if (!J.route) return
-      if (J.mode === 'demo' && J.playing) {
-        J.playing = false
-        if (J.raf) cancelAnimationFrame(J.raf)
-        setButtons()
-        return
-      }
-      if (J.t >= 1) J.t = 0
-      J.mode = 'demo'; J.playing = true
-      showPanel(); setButtons()
-      animateDemo()
-    }
-
-    function animateDemo() {
-      const map = mapRef.current
-      const route = J.route
-      if (!route || !map) return
-      const DURATION = 20000
-      let last = performance.now()
-      const step = (now) => {
-        if (J.mode !== 'demo' || !J.playing) return
-        const dt = now - last; last = now
-        J.t = Math.min(1, J.t + dt / DURATION)
-        const pos = pointAtFraction(J.route, J.t)
-        if (pos) {
-          const ahead = pointAtFraction(J.route, Math.min(1, J.t + 0.006))
-          const brg = ahead ? bearingDeg(pos, ahead) : null
-          if (!J.truck) {
-            J.truck = L.marker(pos, { icon: vehicleIcon() }).addTo(map)
-          }
-          setVehicle(J.truck, pos, brg)
-          followVehicle(J, map, pos)
-          updatePanel(J.route, J.t)
-        }
-        if (J.t < 1) J.raf = requestAnimationFrame(step)
-        else {
-          J.playing = false; J.raf = null
-          J.bannerHold = true
-          setBanner({ arrow: '🎉', text: 'You have arrived', dist: '', tone: 'ok', then: 'Trip complete — well driven!' })
-          if (journeyUiRef.current.eta) journeyUiRef.current.eta.innerHTML = '<b>Arrived</b><span> • trip complete</span>'
-          journeyUiRef.current.warn.textContent = ''
-          setButtons()
-        }
-      }
-      J.raf = requestAnimationFrame(step)
-    }
-
     // ---------- LIVE JOURNEY: real GPS tracking + off-route rerouting ----------
     function startLive() {
-      if (!J.route) return
+      if (!J.route || J.mode === 'live') return
       if (!navigator.geolocation) {
         journeyUiRef.current.warn.textContent = 'GPS is not available in this browser.'
         showPanel()
@@ -532,6 +507,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       showPanel(); setButtons()
       const ui = journeyUiRef.current
       ui.stat.textContent = 'Waiting for GPS signal… allow location access if asked.'
+      speak(`Starting navigation to ${shortName(J.meta?.to || 'your destination')}`)
       ui.warn.textContent = ''
       if (ui.eta) ui.eta.innerHTML = ''
       // Instant start, Google-Maps style: if we already know where the driver
@@ -597,6 +573,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           ui.warn.textContent = '⚠ You are off the route! Finding a new route from your current location…'
           ui.warn.className = 'jwarn bad'
           setBanner({ arrow: '⚠', text: 'You are off the route!', dist: '', tone: 'warn', then: 'Finding a new route from your current location…' })
+          speak('You are off the route. Finding a new route.')
           rerouteRef.current?.(pos.coords.latitude, pos.coords.longitude)
         } else if (!J.rerouting) {
           ui.warn.textContent = '⚠ You seem to be leaving the route…'
@@ -612,6 +589,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       J.frac = t
       if (t >= 0.995 && !J.arrived && J.mode) {
         J.arrived = true
+        speak('You have arrived at your destination')
         journeyEventRef.current?.({ type: 'journey', mode: J.mode, progress: 1, completed: true,
           routeLabel: route.label, miles: route.distance_miles,
           from: J.meta?.from, to: J.meta?.to })
@@ -625,13 +603,27 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
         ui.eta.innerHTML = `<b>${minsLeft} min</b><span> • ${(totalMiles - mileNow).toFixed(1)} mi left • ETA ${etaClock}</span>`
       }
-      if (!J.bannerHold && !J.rerouting) {
-        const nm = nextManeuver(route, mileNow)
-        if (nm) setBanner({
+      const nm = !J.rerouting ? nextManeuver(route, mileNow) : null
+      if (!J.bannerHold && nm) {
+        setBanner({
           arrow: stepArrow(nm.step), dist: fmtDist(nm.step.mile - mileNow),
           text: stepText(nm.step),
           then: nm.next ? `Then ${stepArrow(nm.next)} ${nm.next.name || ''}`.trim() : null,
         })
+      }
+      // Voice: announce each maneuver twice - once in good time (<=0.6 mi)
+      // and once when close (<=0.15 mi). E.g. "In 0.5 miles, turn right
+      // onto Main Road."
+      if (nm && J.mode) {
+        const remaining = nm.step.mile - mileNow
+        if (J.voiceStep !== nm.step.mile) { J.voiceStep = nm.step.mile; J.voiceStage = 0 }
+        if (remaining <= 0.6 && remaining > 0.15 && J.voiceStage < 1) {
+          J.voiceStage = 1
+          speak(`In ${spokenDist(remaining)}, ${stepText(nm.step)}`)
+        } else if (remaining <= 0.15 && remaining > 0.01 && J.voiceStage < 2) {
+          J.voiceStage = 2
+          speak(`In ${spokenDist(remaining)}, ${stepText(nm.step)}`)
+        }
       }
       const passed = [...route.checkpoints].filter((c) => c.mile <= mileNow)
       const cur = passed[passed.length - 1]
@@ -664,10 +656,16 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       const sameDestination = J.meta && result &&
         Math.abs(J.meta.destLat - result.destination.lat) < 0.001 &&
         Math.abs(J.meta.destLon - result.destination.lon) < 0.001
-      if (J.mode === 'demo' && !isNewResult && sel) {
-        // Route switch mid-demo: keep driving — same progress fraction on the
-        // newly selected route, truck and panel stay alive.
-        J.route = sel
+      const editedTrip = (editSignalRef?.current || 0) !== (J.lastEditSeen || 0)
+      J.lastEditSeen = editSignalRef?.current || 0
+      if (J.mode === 'live' && isNewResult && editedTrip && sel) {
+        // Victor: pressing Update trip mid-journey must NOT leave the map -
+        // the journey continues on the new trip (same GPS watch, new route).
+        J.route = sel; J.offCount = 0; J.rerouting = false; J.arrived = false; J.frac = 0
+        J.bannerHold = true
+        J.setBanner?.({ arrow: '↻', text: 'Trip updated', dist: '', tone: 'ok', then: 'Navigating to the new destination.' })
+        setTimeout(() => { J.bannerHold = false }, 3000)
+        J.speak?.(`New trip. Navigating to ${shortName(result.destination.name)}`)
       } else if (J.mode === 'live' && J.watchId != null && sameDestination) {
         // This result is a reroute (or a refresh of the same trip): keep tracking.
         const wasRerouting = J.rerouting
@@ -679,12 +677,12 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           journeyUiRef.current.warn.className = 'jwarn'
           J.bannerHold = true
           J.setBanner?.({ arrow: '✅', text: 'New route ready', dist: '', tone: 'ok', then: 'Follow the highlighted route.' })
+          J.speak?.('New route ready')
           setTimeout(() => { J.bannerHold = false }, 4000)
         }
       } else {
         // A genuinely new search (or mode not live): reset the journey.
         if (J.mode) J.end?.()
-        if (J.truck) { J.truck.remove(); J.truck = null }
         Object.assign(J, { playing: false, raf: null, t: 0, route: sel, mode: null })
         J.hideUi?.()
       }
