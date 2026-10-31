@@ -192,6 +192,12 @@ function setVehicle(marker, latlng, bearing) {
 
 // Follow the vehicle ONLY when it reaches the map's edge zone. Panning on a
 // timer (the old approach) made the whole map shake during the journey.
+// Route lines + checkpoint dots render as SVG, not canvas: during pan /
+// two-finger rotate the browser just transforms the SVG layer (GPU-cheap),
+// so the green line stays glued to the road instead of lagging behind and
+// snapping back (Victor's video feedback).
+const svgRenderer = L.svg({ padding: 0.5 })
+
 function followVehicle(J, map, pos) {
   if (J.followLock) { map.panTo(pos, { animate: true, duration: 0.25 }); return }
   if (!map.getBounds().pad(-0.18).contains(pos)) {
@@ -304,8 +310,8 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (!map) return
       const ll = [lat, lon]
       locateRef.current.clearLayers()
-      L.circle(ll, { radius: acc || 100, color: '#3b82f6', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.15 }).addTo(locateRef.current)
-      L.circleMarker(ll, { radius: 8, color: '#ffffff', weight: 3, fillColor: '#3b82f6', fillOpacity: 1 })
+      L.circle(ll, { renderer: svgRenderer, radius: acc || 100, color: '#3b82f6', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.15 }).addTo(locateRef.current)
+      L.circleMarker(ll, { renderer: svgRenderer, radius: 8, color: '#ffffff', weight: 3, fillColor: '#3b82f6', fillOpacity: 1 })
         .addTo(locateRef.current).bindPopup('<b>📍 You are here</b><br>Your current GPS location')
       if (fly) map.flyTo(ll, Math.max(map.getZoom(), 11))
     }
@@ -401,7 +407,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           '  <div class="jedit">' +
           '    <div class="jedit-row"><span class="dot from"></span><input class="jfrom" type="text" autocomplete="off" spellcheck="false" aria-label="From"></div>' +
           '    <div class="jedit-row"><span class="dot to"></span><input class="jto" type="text" autocomplete="off" spellcheck="false" aria-label="To"></div>' +
-          '    <button class="japply" style="display:none">↻ Update trip</button>' +
+          '    <div class="jswaprow"><button class="jswap" title="Swap start and destination">⇅ Swap</button><button class="japply" style="display:none">↻ Update trip</button></div>' +
           '  </div>' +
           '  <div class="jchips"></div>' +
           '  <div class="nb-etarow"><span class="jeta"></span><button class="jvoice" title="Voice guidance on/off">🔊</button><button class="jend">✕ End</button></div>' +
@@ -436,10 +442,17 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         }
         fromInput.addEventListener('input', markDirty)
         toInput.addEventListener('input', markDirty)
-        applyBtn.addEventListener('click', () => {
+        const applyEdit = () => {
           editTripRef.current?.(fromInput.value, toInput.value)
           applyBtn.style.display = 'none'
           fromInput.blur(); toInput.blur()
+        }
+        applyBtn.addEventListener('click', applyEdit)
+        div.querySelector('.jswap').addEventListener('click', () => {
+          const t = fromInput.value
+          fromInput.value = toInput.value
+          toInput.value = t
+          applyEdit() // a swap is a complete change: rebuild the trip at once
         })
         div.querySelector('.jend').addEventListener('click', () => endJourney())
         return div
@@ -855,9 +868,10 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (isSel) {
         // White casing: the driven route lifts off the map so flyovers and
         // main roads read clearly against the side roads beneath them.
-        L.polyline(r.geometry, { color: '#ffffff', weight: 11, opacity: 0.9 }).addTo(layers)
+        L.polyline(r.geometry, { color: '#ffffff', weight: 11, opacity: 0.9, renderer: svgRenderer }).addTo(layers)
       }
       const line = L.polyline(r.geometry, {
+        renderer: svgRenderer,
         color: isRec ? '#00c896' : '#3b82f6',
         weight: isSel ? 7 : isRec ? 6 : 4,
         opacity: 0.95,
@@ -876,6 +890,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     const selRoute = result.routes.find((r) => r.id === selectedRouteId) || result.routes[0]
     selRoute.checkpoints.forEach((c) => {
       L.circleMarker([c.lat, c.lon], {
+        renderer: svgRenderer,
         radius: 8, color: '#fff', weight: 1.5,
         fillColor: RISK_COLORS[c.risk], fillOpacity: 1,
       }).addTo(layers).bindPopup(

@@ -268,6 +268,12 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
         📍 Use my current location (GPS)
       </button>
       {gpsMsg && <div className="gps-msg">{gpsMsg}</div>}
+      <div className="swaprow">
+        <button type="button" className="swap-btn" title="Swap start and destination"
+          onClick={() => setForm({ ...form, origin: form.destination, destination: form.origin })}>
+          ⇅ Swap start &amp; destination
+        </button>
+      </div>
       <label>Destination</label>
       <div className="ac-wrap">
         <input value={form.destination} onChange={set('destination')} required autoComplete="off"
