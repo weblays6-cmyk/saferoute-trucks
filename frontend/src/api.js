@@ -29,3 +29,16 @@ export async function analyzeTrip({ origin, destination, departureLocal, loadLb,
     throw new Error('Could not reach the server. Is the backend running?')
   }
 }
+
+// ---- Live location sharing -------------------------------------------------
+export async function shareStart(from, to) {
+  const { data } = await axios.post(`${API_BASE}/api/share/start/`, { from, to })
+  return data.id
+}
+export async function sharePing(id, lat, lon, etaMin) {
+  try { await axios.post(`${API_BASE}/api/share/${id}/ping/`, { lat, lon, eta_min: etaMin }) } catch {}
+}
+export async function shareStop(id) {
+  try { await axios.post(`${API_BASE}/api/share/${id}/stop/`, {}) } catch {}
+}
+export { API_BASE }

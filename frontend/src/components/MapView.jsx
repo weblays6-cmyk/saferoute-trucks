@@ -1,3 +1,4 @@
+import { shareStart, sharePing, shareStop } from '../api.js'
 import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -212,6 +213,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
   const lastResultRef = useRef(null)
   const locateRef = useRef(null)
   const journeyRef = useRef(null)
+  const syncRef = useRef({}) // latest {result, selectedRouteId} for startLive's fallback
   const journeyUiRef = useRef({})
   const rerouteRef = useRef(onReroute)
   rerouteRef.current = onReroute
@@ -242,6 +244,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       rotate: true, touchRotate: true, rotateControl: false, // twist with two fingers; no plugin compass box (our Re-centre resets north)
     }).setView([34.1, -97.1], 6)
     window.__srMap = mapRef.current // debug/testing handle
+    window.__srJ = journeyRef // debug/testing handle
     // If OpenStreetMap tiles keep failing (throttling / slow network), quietly
     // swap the Light base to Esri World Street Map so the map never stays grey.
     const esriStreet = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
@@ -297,6 +300,12 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     }
     journeyRef.current = J
     mapRef.current.on('dragstart', () => { J.followLock = false })
+    // A two-finger gesture (pinch / twist to look around) must also release
+    // the follow lock, or the camera keeps snapping back to the truck
+    // mid-gesture and the whole map feels like it jumps away.
+    mapRef.current.getContainer().addEventListener('touchstart', (e) => {
+      if (e.touches && e.touches.length >= 2) J.followLock = false
+    }, { passive: true })
 
     // ---- My-location helpers: cache every fix (instant journey starts) and
     // draw the blue "you are here" dot. Used by the locate button, the
@@ -410,7 +419,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           '    <div class="jswaprow"><button class="jswap" title="Swap start and destination">⇅ Swap</button><button class="japply" style="display:none">↻ Update trip</button></div>' +
           '  </div>' +
           '  <div class="jchips"></div>' +
-          '  <div class="nb-etarow"><span class="jeta"></span><button class="jvoice" title="Voice guidance on/off">🔊</button><button class="jend">✕ End</button></div>' +
+          '  <div class="nb-etarow"><span class="jeta"></span><button class="jshare" title="Share live location">📤 Share</button><button class="jvoice" title="Voice guidance on/off">🔊</button><button class="jend">✕ End</button></div>' +
           '  <div class="jbar"><div class="jfill"></div></div>' +
           '  <div class="jstat"></div>' +
           '  <div class="jwarn"></div>' +
@@ -427,11 +436,85 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           warn: div.querySelector('.jwarn'), eta: div.querySelector('.jeta'),
           chips: div.querySelector('.jchips'), voice: div.querySelector('.jvoice'),
         }
+        journeyUiRef.current.share = div.querySelector('.jshare')
+        journeyUiRef.current.share.addEventListener('click', async () => {
+          const btn = journeyUiRef.current.share
+          const ui = journeyUiRef.current
+          if (J.shareId) {
+            shareStop(J.shareId)
+            J.shareId = null
+            btn.classList.remove('on')
+            btn.textContent = '📤 Share'
+            ui.warn.textContent = 'Live location sharing stopped.'
+            ui.warn.className = 'jwarn'
+            return
+          }
+          btn.textContent = '…'
+          try {
+            const id = await shareStart(shortName(J.meta?.from || ''), shortName(J.meta?.to || ''))
+            J.shareId = id
+            const url = `${window.location.origin}/track/${id}`
+            if (J._lastPos) sharePing(id, J._lastPos.lat, J._lastPos.lng, J._etaMin ?? null)
+            btn.classList.add('on')
+            btn.textContent = '📤 Sharing'
+            const text = `🚛 Live trip: ${shortName(J.meta?.from || '')} → ${shortName(J.meta?.to || '')} — follow my truck live:`
+            if (navigator.share) {
+              try { await navigator.share({ title: 'SafeRoute live trip', text, url }) } catch {}
+              ui.warn.textContent = '📤 Live location ON — anyone with the link can follow this trip.'
+            } else if (navigator.clipboard) {
+              await navigator.clipboard.writeText(`${text} ${url}`).catch(() => {})
+              ui.warn.textContent = '📤 Live location ON — link copied. Paste it in WhatsApp to share.'
+            }
+            ui.warn.className = 'jwarn'
+            speak('Live location sharing on')
+          } catch {
+            btn.textContent = '📤 Share'
+            ui.warn.textContent = 'Could not start sharing — check the connection and try again.'
+            ui.warn.className = 'jwarn bad'
+          }
+        })
         journeyUiRef.current.voice.textContent = J.voiceOn ? '🔊' : '🔇'
         journeyUiRef.current.voice.addEventListener('click', () => {
           J.voiceOn = !J.voiceOn
           try { localStorage.setItem('saferoute_voice', J.voiceOn ? '1' : '0') } catch {}
-          journeyUiRef.current.voice.textContent = J.voiceOn ? '🔊' : '🔇'
+          journeyUiRef.current.share = div.querySelector('.jshare')
+        journeyUiRef.current.share.addEventListener('click', async () => {
+          const btn = journeyUiRef.current.share
+          const ui = journeyUiRef.current
+          if (J.shareId) {
+            shareStop(J.shareId)
+            J.shareId = null
+            btn.classList.remove('on')
+            btn.textContent = '📤 Share'
+            ui.warn.textContent = 'Live location sharing stopped.'
+            ui.warn.className = 'jwarn'
+            return
+          }
+          btn.textContent = '…'
+          try {
+            const id = await shareStart(shortName(J.meta?.from || ''), shortName(J.meta?.to || ''))
+            J.shareId = id
+            const url = `${window.location.origin}/track/${id}`
+            if (J._lastPos) sharePing(id, J._lastPos.lat, J._lastPos.lng, J._etaMin ?? null)
+            btn.classList.add('on')
+            btn.textContent = '📤 Sharing'
+            const text = `🚛 Live trip: ${shortName(J.meta?.from || '')} → ${shortName(J.meta?.to || '')} — follow my truck live:`
+            if (navigator.share) {
+              try { await navigator.share({ title: 'SafeRoute live trip', text, url }) } catch {}
+              ui.warn.textContent = '📤 Live location ON — anyone with the link can follow this trip.'
+            } else if (navigator.clipboard) {
+              await navigator.clipboard.writeText(`${text} ${url}`).catch(() => {})
+              ui.warn.textContent = '📤 Live location ON — link copied. Paste it in WhatsApp to share.'
+            }
+            ui.warn.className = 'jwarn'
+            speak('Live location sharing on')
+          } catch {
+            btn.textContent = '📤 Share'
+            ui.warn.textContent = 'Could not start sharing — check the connection and try again.'
+            ui.warn.className = 'jwarn bad'
+          }
+        })
+        journeyUiRef.current.voice.textContent = J.voiceOn ? '🔊' : '🔇'
           if (J.voiceOn) speak('Voice guidance on')
           else { try { window.speechSynthesis?.cancel() } catch {} }
         })
@@ -512,12 +595,16 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     // Google-Maps behaviour: navigation starts from where the driver
     // actually IS. If that is well away from the searched route's start,
     // rebuild the route from the live position to the same destination.
-    function startFromHere(lat, lon) {
+    function startFromHere(lat, lon, acc) {
       if (J.startRerouted || !J.route) return
       const startPt = J.route.geometry?.[0]
       if (!startPt) return
       const d = L.latLng(lat, lon).distanceTo(L.latLng(startPt[0], startPt[1]))
-      if (d <= 500) { J.joined = d <= 400; return }
+      // The route must start where the driver IS, not at the searched pin:
+      // even ~150 m away counts (Victor stood ~300 m from the pin and the
+      // route still began at the pin). Fuzzy desktop fixes get more slack.
+      const tol = Math.max(150, Math.min(acc || 0, 400))
+      if (d <= tol) { J.joined = true; return }
       J.startRerouted = true
       J.rerouting = true
       setBanner({ arrow: '📍', text: 'Starting from your current location', dist: '', tone: 'ok', then: 'Rebuilding the route from where you are…' })
@@ -525,6 +612,25 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       rerouteRef.current?.(lat, lon)
     }
     J.startFromHere = startFromHere
+    // Google-Maps-style go-slow reminders, from data we truly have: the
+    // weather sampled at the checkpoints ahead + sharp turns in the steps.
+    // (Live accident/flood reports need a traffic-data feed we do not have;
+    // heavy rain ahead doubles as the water-on-road caution.)
+    function hazardAhead(route, mileNow) {
+      for (const x of route.checkpoints || []) {
+        if (x.mile <= mileNow + 0.3 || x.mile > mileNow + 8) continue
+        if (x.risk === 'NO_TRAVEL') return { key: `nt${x.mile}`, text: `⛔ No-travel weather ahead (Mile ${x.mile}) — plan to stop before it.`, say: `Caution. Dangerous weather ahead at mile ${x.mile}. Plan to stop before it.` }
+        if (x.rain_in_hr >= 0.5) return { key: `hr${x.mile}`, text: `🌧 Heavy rain ahead (Mile ${x.mile}) — go slow, watch for water on the road.`, say: `Caution. Heavy rain ahead. Go slow.` }
+        if (x.rain_in_hr >= 0.25) return { key: `rn${x.mile}`, text: `🌧 Rain ahead (Mile ${x.mile}) — go slow.`, say: `Caution. Rain ahead. Go slow.` }
+        if (x.wind_mph >= 45) return { key: `wn${x.mile}`, text: `💨 Strong winds ahead (Mile ${x.mile}) — go slow, hold the wheel firm.`, say: `Caution. Strong winds ahead. Go slow.` }
+        if (x.wind_mph >= 35) return { key: `wd${x.mile}`, text: `💨 High winds ahead (Mile ${x.mile}) — go slow.`, say: `Caution. High winds ahead. Go slow.` }
+        if (x.snow_in_hr >= 1) return { key: `sn${x.mile}`, text: `🌨 Snow ahead (Mile ${x.mile}) — go slow.`, say: `Caution. Snow ahead. Go slow.` }
+      }
+      const st = (route.steps || []).find((s2) => s2.mile > mileNow + 0.2 && s2.mile <= mileNow + 2 && /sharp/.test(s2.modifier || ''))
+      if (st) return { key: `st${st.mile}`, text: '⚠ Sharp turn ahead — go slow.', say: 'Caution. Sharp turn ahead. Go slow.' }
+      return null
+    }
+    J.hazardAhead = hazardAhead
     function spokenDist(mi) {
       if (mi < 0.1) return `${Math.max(30, Math.round(mi * 5280 / 10) * 10)} feet`
       return `${mi < 0.95 ? Math.round(mi * 20) / 20 : mi.toFixed(1)} miles`
@@ -592,6 +698,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           routeLabel: J.route?.label, miles: J.route?.distance_miles,
           from: J.meta?.from, to: J.meta?.to })
       }
+      if (J.shareId) { shareStop(J.shareId); J.shareId = null }
       if (J.raf) cancelAnimationFrame(J.raf)
       if (J.watchId != null && navigator.geolocation) navigator.geolocation.clearWatch(J.watchId)
       if (J.liveDot) { J.liveDot.remove(); J.liveDot = null }
@@ -606,7 +713,26 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
 
     // ---------- LIVE JOURNEY: real GPS tracking + off-route rerouting ----------
     function startLive() {
-      if (!J.route || J.mode === 'live') return
+      if (J.mode === 'live') return
+      if (!J.route) {
+        // Fallback: build the journey state from the latest result directly.
+        // (If the sync effect ever lags a beat behind the results render,
+        // the Start button must still work - a silent no-op here felt like
+        // a dead button.)
+        const { result, selectedRouteId } = syncRef.current || {}
+        const sel = result?.routes?.find((r) => r.id === selectedRouteId) || result?.routes?.[0]
+        if (sel) {
+          J.route = sel
+          J.meta = { from: result.origin.name, to: result.destination.name,
+                     destLat: result.destination.lat, destLon: result.destination.lon }
+        }
+      }
+      if (!J.route) {
+        const ui0 = journeyUiRef.current
+        if (ui0?.warn) { ui0.warn.textContent = 'Route is still loading — give it a second and tap Start again.'; ui0.warn.className = 'jwarn bad' }
+        showPanel()
+        return
+      }
       if (!navigator.geolocation) {
         journeyUiRef.current.warn.textContent = 'GPS is not available in this browser.'
         showPanel()
@@ -681,10 +807,14 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       J._lastPos = ll
       cachePos(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy)
       followVehicle(J, map, ll)
+      if (J.shareId && Date.now() - (J.sharePingAt || 0) > 10000) {
+        J.sharePingAt = Date.now()
+        sharePing(J.shareId, ll.lat, ll.lng, J._etaMin ?? null)
+      }
 
       if (!J.startChecked && (pos.coords.accuracy ?? 9999) < 1000) {
         J.startChecked = true
-        J.startFromHere?.(pos.coords.latitude, pos.coords.longitude)
+        J.startFromHere?.(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy)
         if (J.startRerouted) return // the rebuilt route is on its way
       }
       const near = nearestOnRoute(route, ll)
@@ -713,7 +843,17 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (near.dist <= threshold) {
         J.offCount = 0
         J.bannerHold = false
-        if (!J.rerouting) { ui.warn.textContent = 'On route ✓ — following the highlighted route.'; ui.warn.className = 'jwarn' }
+        if (!J.rerouting) {
+          const hz = J.hazardAhead?.(route, near.frac * route.distance_miles)
+          if (hz) {
+            ui.warn.textContent = hz.text
+            ui.warn.className = 'jwarn bad'
+            if (J.moving && J.hazardKey !== hz.key) { J.hazardKey = hz.key; speak(hz.say) }
+          } else {
+            ui.warn.textContent = 'On route ✓ — following the highlighted route.'
+            ui.warn.className = 'jwarn'
+          }
+        }
       } else {
         J.offCount += 1
         J.bannerHold = true
@@ -750,6 +890,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       const mileNow = t * totalMiles
       ui.fill.style.width = `${Math.round(t * 100)}%`
       const minsLeft = Math.max(0, Math.round(route.summary.duration_min * (1 - t)))
+      J._etaMin = minsLeft
       if (ui.eta) {
         const etaClock = new Date(Date.now() + minsLeft * 60000)
           .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
@@ -849,6 +990,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         destLat: result.destination.lat, destLon: result.destination.lon,
       } : null
       J.routesMeta = result ? result.routes.map((r) => ({ id: r.id, label: r.label })) : null
+      syncRef.current = { result, selectedRouteId }
       if (!J.mode) J.route = sel
       J.setButtons?.()
       if (journeyUiRef.current?.panel.style.display !== 'none') J.setNav?.()
@@ -922,6 +1064,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     const map = mapRef.current, heat = heatRef.current
     if (!map || !heat) return
     heat.clearLayers()
+    if (journeyRef.current?.mode) return // no heat overlay while driving: its canvas cannot rotate with the map and smears across the road
     if (!showHeat || !result?.heatmap?.points?.length || !L.heatLayer) return
     try {
       if (map.getSize().y > 0) {
@@ -932,7 +1075,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         }).addTo(heat)
       }
     } catch (e) { /* heatmap is decorative — skip it if the canvas fails */ }
-  }, [result, showHeat, heatHour])
+  }, [result, showHeat, heatHour, journeyTick])
 
   return <div id="saferoute-map" className="map" />
 }

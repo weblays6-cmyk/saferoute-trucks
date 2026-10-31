@@ -5,6 +5,7 @@ import RouteCards from './components/RouteCards'
 import CheckpointTable from './components/CheckpointTable'
 import { analyzeTrip } from './api'
 import './App.css'
+import TrackView from './components/TrackView.jsx'
 
 // Default departure: tomorrow 08:00 local, in the format datetime-local expects.
 function tomorrow8am() {
@@ -22,6 +23,9 @@ function shortPlace(name) {
 }
 
 export default function App() {
+  // Public live-tracking links (/track/<id>) render the viewer, not the app.
+  const trackMatch = window.location.pathname.match(/^\/track\/([A-Za-z0-9_-]+)/)
+  if (trackMatch) return <TrackView id={trackMatch[1]} />
   const [form, setForm] = useState({
     origin: '', destination: '',  // no prefilled places - the driver enters their own trip
     departure: tomorrow8am(), loadLb: 35000, interval: '25',

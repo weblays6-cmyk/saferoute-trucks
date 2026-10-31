@@ -33,3 +33,64 @@ class HealthView(APIView):
 
     def get(self, request):
         return Response({"status": "ok"})
+
+
+# ---- Live location sharing -------------------------------------------------
+# A driver taps Share mid-journey: the server keeps the latest position for a
+# short random id, and anyone with the /track/<id> link can watch the truck
+# move. In-memory on purpose (demo scale): a restart simply ends old shares.
+import secrets
+import threading
+import time
+
+_SHARES = {}
+_SHARES_LOCK = threading.Lock()
+
+
+class ShareStartView(APIView):
+    def post(self, request):
+        sid = secrets.token_urlsafe(6)
+        with _SHARES_LOCK:
+            _SHARES[sid] = {
+                "from": str(request.data.get("from") or "")[:200],
+                "to": str(request.data.get("to") or "")[:200],
+                "lat": None, "lon": None, "eta_min": None,
+                "active": True, "updated_at": time.time(),
+            }
+        return Response({"id": sid})
+
+
+class SharePingView(APIView):
+    def post(self, request, sid):
+        with _SHARES_LOCK:
+            s = _SHARES.get(sid)
+            if not s:
+                return Response({"detail": "share not found"}, status=status.HTTP_404_NOT_FOUND)
+            try:
+                s["lat"] = float(request.data.get("lat"))
+                s["lon"] = float(request.data.get("lon"))
+            except (TypeError, ValueError):
+                return Response({"detail": "bad coordinates"}, status=status.HTTP_400_BAD_REQUEST)
+            s["eta_min"] = request.data.get("eta_min")
+            s["updated_at"] = time.time()
+        return Response({"ok": True})
+
+
+class ShareStopView(APIView):
+    def post(self, request, sid):
+        with _SHARES_LOCK:
+            s = _SHARES.get(sid)
+            if s:
+                s["active"] = False
+        return Response({"ok": True})
+
+
+class ShareGetView(APIView):
+    def get(self, request, sid):
+        with _SHARES_LOCK:
+            s = _SHARES.get(sid)
+            if not s:
+                return Response({"detail": "share not found"}, status=status.HTTP_404_NOT_FOUND)
+            out = dict(s)
+        out["age_sec"] = round(time.time() - out["updated_at"])
+        return Response(out)
