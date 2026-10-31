@@ -597,6 +597,68 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     })
     new RecenterControl({ position: 'bottomright' }).addTo(mapRef.current)
 
+    // ---- Quick live-location share (Victor: a small Share button on the
+    // main map too, phone + laptop - not only inside a journey). Starts a
+    // standalone GPS watch + share session; the link stays valid 24 hours.
+    const qs = { id: null, watchId: null, lastPing: 0 }
+    const QuickShareControl = L.Control.extend({
+      onAdd() {
+        const div = L.DomUtil.create('div', 'leaflet-control quickshare-wrap')
+        div.innerHTML = '<button class="quickshare-btn" title="Share my live location">📤 Share live</button>'
+        L.DomEvent.disableClickPropagation(div)
+        L.DomEvent.disableScrollPropagation(div)
+        const btn = div.querySelector('.quickshare-btn')
+        const stopQs = () => {
+          if (qs.watchId != null) navigator.geolocation.clearWatch(qs.watchId)
+          if (qs.id) shareStop(qs.id)
+          qs.id = null; qs.watchId = null
+          window.__srShareId = null
+          btn.classList.remove('on')
+          btn.textContent = '📤 Share live'
+        }
+        btn.addEventListener('click', () => {
+          if (qs.id) { stopQs(); return }
+          if (!navigator.geolocation) return
+          btn.textContent = '📤 Locating…'
+          navigator.geolocation.getCurrentPosition(async (pos) => {
+            const { latitude: lat, longitude: lon, accuracy: acc } = pos.coords
+            cachePos(lat, lon, acc)
+            drawMyLocation(lat, lon, acc, true)
+            let name = 'My live location'
+            try {
+              const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=14`)
+              const d = await r.json()
+              if (d.display_name) name = d.display_name.split(',').slice(0, 3).join(',')
+            } catch {}
+            try {
+              qs.id = await shareStart(name, '')
+            } catch { btn.textContent = '📤 Share live'; return }
+            window.__srShareId = qs.id
+            sharePing(qs.id, lat, lon, null)
+            qs.lastPing = Date.now()
+            qs.watchId = navigator.geolocation.watchPosition((p2) => {
+              const c = p2.coords
+              cachePos(c.latitude, c.longitude, c.accuracy)
+              drawMyLocation(c.latitude, c.longitude, c.accuracy, false)
+              if (Date.now() - qs.lastPing > 10000) {
+                qs.lastPing = Date.now()
+                sharePing(qs.id, c.latitude, c.longitude, null)
+              }
+            }, () => {}, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 })
+            btn.classList.add('on')
+            btn.textContent = '📤 Sharing — stop'
+            const url = `${window.location.origin}/track/${qs.id}`
+            if (navigator.share) { try { await navigator.share({ title: 'My live location — SafeRoute', url }) } catch {} }
+            else if (navigator.clipboard) { try { await navigator.clipboard.writeText(url) } catch {} }
+          }, () => { btn.textContent = '📤 Share live' },
+          { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 })
+        })
+        journeyUiRef.current.quickshare = div
+        return div
+      },
+    })
+    new QuickShareControl({ position: 'bottomright' }).addTo(mapRef.current)
+
     function setBanner({ arrow = '↑', dist = '', text = '', then = null, tone = '' } = {}) {
       const b = journeyUiRef.current?.banner
       if (!b) return
@@ -670,6 +732,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (ui.banner) ui.banner.root.style.display = 'block'
       if (ui.panel) ui.panel.style.display = 'block'
       if (ui.recenter) ui.recenter.style.display = 'block'
+      if (ui.quickshare) ui.quickshare.style.display = 'none' // the journey bar carries Share during a trip
       if (ui.locate) ui.locate.style.display = 'none' // Re-centre replaces Locate mid-journey (two similar buttons confused taps)
       if (ui.btns) ui.btns.style.display = 'none'
     }
@@ -679,6 +742,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (ui.banner) ui.banner.root.style.display = 'none'
       if (ui.panel) ui.panel.style.display = 'none'
       if (ui.recenter) ui.recenter.style.display = 'block' // stays in every mode now
+      if (ui.quickshare) ui.quickshare.style.display = 'block'
       if (ui.locate) ui.locate.style.display = 'none' // Re-centre is the single location button
       if (ui.btns) ui.btns.style.display = 'block'
     }

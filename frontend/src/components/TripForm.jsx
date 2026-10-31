@@ -96,6 +96,9 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
     setForm({ ...form, [key]: e.target.value }); suggest(key, e.target.value)
   }
   const [gpsMsg, setGpsMsg] = useState('')
+  const [nearby, setNearby] = useState([])   // real places near the user, fetched live
+  const nearbyForRef = useRef('')            // coords key the list was fetched for
+  const locTriedRef = useRef(false)
 
   // Place predictions (Google-Maps style): as the user types, Nominatim suggests
   // matching places; tapping one fills the field. Debounced, free, no API key.
@@ -200,8 +203,10 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
       }
       if (recent.length) sections.push({ head: '🕘 Recent searches', icon: '🕘', rows: recent.map((name) => ({ name, note: '' })) })
     } catch {}
-    // Nearby (or popular) places.
-    if (myCoords) {
+    // Nearby (or popular) places: REAL fetched places near this user win.
+    if (nearby.length) {
+      sections.push({ head: '📍 Near you', icon: '📍', rows: nearby.map((c) => ({ name: c.name, note: `${c.d < 1 ? '<1' : Math.round(c.d)} mi away` })) })
+    } else if (myCoords) {
       const rows = CITIES
         .map((c) => ({ ...c, d: distMiles(myCoords.lat, myCoords.lon, c.lat, c.lon) }))
         .sort((a, b) => a.d - b.d)
@@ -211,13 +216,17 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
     } else {
       sections.push({ head: '⭐ Popular places', icon: '📍', rows: POPULAR.map((name) => ({ name, note: '' })) })
     }
-    // Famous / tourist places, nearest first when we know the position.
-    const famous = myCoords
-      ? FAMOUS.map((c) => ({ ...c, d: distMiles(myCoords.lat, myCoords.lon, c.lat, c.lon) }))
-          .sort((a, b) => a.d - b.d)
-          .map((c) => ({ name: c.name, note: `${Math.round(c.d)} mi away` }))
-      : FAMOUS.slice(0, 5).map((c) => ({ name: c.name, note: '' }))
-    sections.push({ head: '⭐ Famous places', icon: '⭐', rows: famous.slice(0, 5) })
+    // Famous / tourist places - only when at least one is plausibly near
+    // (a user in Uzbekistan should not be offered Charminar as "nearby").
+    if (myCoords) {
+      const famous = FAMOUS.map((c) => ({ ...c, d: distMiles(myCoords.lat, myCoords.lon, c.lat, c.lon) }))
+        .sort((a, b) => a.d - b.d)
+      if (famous.length && famous[0].d <= 300) {
+        sections.push({ head: '⭐ Famous places', icon: '⭐', rows: famous.slice(0, 5).map((c) => ({ name: c.name, note: `${Math.round(c.d)} mi away` })) })
+      }
+    } else {
+      sections.push({ head: '⭐ Famous places', icon: '⭐', rows: FAMOUS.slice(0, 5).map((c) => ({ name: c.name, note: '' })) })
+    }
     return (
       <ul className="ac-list">
         {sections.map((sec) => (
@@ -242,11 +251,70 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
       .then((st) => {
         if (st.state !== 'granted' || !navigator.geolocation) return
         navigator.geolocation.getCurrentPosition(
-          (pos) => setMyCoords({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+          (pos) => {
+            setMyCoords({ lat: pos.coords.latitude, lon: pos.coords.longitude })
+            fetchNearby(pos.coords.latitude, pos.coords.longitude)
+          },
           () => {}, { timeout: 8000, maximumAge: 600000 })
       })
       .catch(() => {})
   }, [])
+
+  // Real nearby places for the suggestion list, fetched around the USER's
+  // own position (Victor's friend in Uzbekistan must see Tashkent-area
+  // places, not Hyderabad). Overpass/OpenStreetMap, cached a day per area.
+  async function fetchNearby(lat, lon) {
+    const key = `${lat.toFixed(2)},${lon.toFixed(2)}`
+    if (nearbyForRef.current === key) return
+    nearbyForRef.current = key
+    try {
+      const raw = localStorage.getItem('sr_near_v1_' + key)
+      if (raw) {
+        const c = JSON.parse(raw)
+        if (Date.now() - c.at < 24 * 3600 * 1000 && c.rows?.length) { setNearby(c.rows); return }
+      }
+    } catch {}
+    try {
+      const q = `[out:json][timeout:8];(node["place"~"city|town|village|suburb|neighbourhood|quarter|hamlet"](around:16000,${lat},${lon});node["tourism"~"attraction|museum|viewpoint"](around:9000,${lat},${lon});node["amenity"~"hospital|university|marketplace|bus_station|fuel"](around:9000,${lat},${lon}););out body 90;`
+      const ctl = new AbortController()
+      const to = setTimeout(() => ctl.abort(), 9000)
+      const r = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST', signal: ctl.signal,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'data=' + encodeURIComponent(q),
+      })
+      clearTimeout(to)
+      const d = await r.json()
+      const seen = new Set()
+      const rows = []
+      for (const el of d.elements || []) {
+        const nm = el.tags?.name
+        if (!nm || seen.has(nm.toLowerCase())) continue
+        seen.add(nm.toLowerCase())
+        rows.push({ name: nm, d: distMiles(lat, lon, el.lat, el.lon) })
+      }
+      rows.sort((a, b) => a.d - b.d)
+      const top = rows.slice(0, 7)
+      if (top.length) {
+        setNearby(top)
+        try { localStorage.setItem('sr_near_v1_' + key, JSON.stringify({ at: Date.now(), rows: top })) } catch {}
+      }
+    } catch {} // suggestions simply fall back to the built-in list
+  }
+
+  // Learn the position on first field focus if we do not have it yet, so
+  // suggestions localize without the user pressing anything.
+  function ensureLocation() {
+    if (myCoords || locTriedRef.current || !navigator.geolocation) return
+    locTriedRef.current = true
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const c = { lat: pos.coords.latitude, lon: pos.coords.longitude }
+        setMyCoords(c)
+        fetchNearby(c.lat, c.lon)
+      },
+      () => {}, { timeout: 8000, maximumAge: 600000 })
+  }
 
   // Ask the browser for the current GPS position and put it in the Origin box.
   function useMyLocation(auto = false) {
@@ -259,6 +327,7 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
       async (pos) => {
         const { latitude, longitude } = pos.coords
         setMyCoords({ lat: latitude, lon: longitude })
+        fetchNearby(latitude, longitude)
         const name = await reverseGeocode(latitude, longitude)
         // The field shows the NAME; the exact GPS pair travels separately
         // so the backend routes from the true spot, not a re-geocoded name.
@@ -279,7 +348,7 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
       <label>Origin (start place)</label>
       <div className="ac-wrap">
         <input value={form.origin} onChange={set('origin')} required autoComplete="off"
-               onFocus={() => setFocusField('origin')} onBlur={() => setFocusField(null)}
+               onFocus={() => { setFocusField('origin'); ensureLocation() }} onBlur={() => setFocusField(null)}
                placeholder="Enter a place — suggestions will appear" />
         {sugList('origin')}
         {quickList('origin')}
@@ -300,7 +369,7 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
       <label>Destination</label>
       <div className="ac-wrap">
         <input value={form.destination} onChange={set('destination')} required autoComplete="off"
-               onFocus={() => setFocusField('destination')} onBlur={() => setFocusField(null)}
+               onFocus={() => { setFocusField('destination'); ensureLocation() }} onBlur={() => setFocusField(null)}
                placeholder="Enter a place — suggestions will appear" />
         {sugList('destination')}
         {quickList('destination')}

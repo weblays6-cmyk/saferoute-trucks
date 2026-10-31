@@ -615,3 +615,9 @@ header { padding: 2px 2px 10px; }
 .track-stay, .track-retry { background: transparent; color: #a7f3d0; border: 1px solid rgba(255,255,255,.35);
   padding: 8px 13px; border-radius: 999px; cursor: pointer; font-size: 13.5px; }
 .track-retry { padding: 3px 10px; margin-left: 6px; }
+
+/* Quick live-location share button on the main map (small, all screens). */
+.quickshare-btn { background: rgba(255,255,255,.94); color: #065f46; border: 1px solid #a7f3d0;
+  font-weight: 700; font-size: 12.5px; padding: 7px 11px; border-radius: 999px; cursor: pointer;
+  box-shadow: 0 2px 8px rgba(2,6,23,.35); }
+.quickshare-btn.on { background: #00c896; color: #04241c; border-color: #00c896; }
