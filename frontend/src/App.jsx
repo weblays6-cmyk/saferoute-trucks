@@ -214,7 +214,8 @@ export default function App() {
           <MapView result={result} selectedRouteId={selectedRoute?.id}
                    onSelectRoute={onSelectRoute} showHeat={showHeat} heatHour={heatHour}
                    onReroute={onReroute} onJourneyMode={setJourneyMode}
-                   onJourneyEvent={addHistory} />
+                   onJourneyEvent={addHistory}
+                   onEditTrip={(from, to) => runTrip({ origin: from, destination: to })} />
           {error && <div className="error">{error}</div>}
           {result?.warnings?.length > 0 && (
             <div className="warnings">{result.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}</div>

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet.heat'
@@ -176,7 +176,7 @@ function followVehicle(J, map, pos) {
   }
 }
 
-export default function MapView({ result, selectedRouteId, onSelectRoute, showHeat, heatHour, onReroute, onJourneyMode, onJourneyEvent }) {
+export default function MapView({ result, selectedRouteId, onSelectRoute, showHeat, heatHour, onReroute, onJourneyMode, onJourneyEvent, onEditTrip }) {
   const mapRef = useRef(null)
   const layerRef = useRef(null)
   const heatRef = useRef(null)
@@ -190,6 +190,15 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
   journeyModeRef.current = onJourneyMode
   const journeyEventRef = useRef(onJourneyEvent)
   journeyEventRef.current = onJourneyEvent
+  const selectRouteRef = useRef(onSelectRoute)
+  selectRouteRef.current = onSelectRoute
+  const editTripRef = useRef(onEditTrip)
+  editTripRef.current = onEditTrip
+  // Bumped when a journey starts/ends so the redraw effect can switch between
+  // "all routes compared" and "only the driven route" (Google-Maps behaviour).
+  const [journeyTick, setJourneyTick] = useState(0)
+  const bumpJourneyRef = useRef(null)
+  bumpJourneyRef.current = () => setJourneyTick((t) => t + 1)
 
   // Create the map once: base maps + switcher, GPS locate button, journey controls.
   useEffect(() => {
@@ -229,6 +238,38 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     }
     journeyRef.current = J
 
+    // ---- My-location helpers: cache every fix (instant journey starts) and
+    // draw the blue "you are here" dot. Used by the locate button, the
+    // on-load auto-locate, and live tracking.
+    function cachePos(lat, lon, acc) {
+      J.lastPos = { lat, lon, acc: acc ?? null, at: Date.now() }
+      try { localStorage.setItem('saferoute_lastpos', JSON.stringify(J.lastPos)) } catch {}
+    }
+    function drawMyLocation(lat, lon, acc, fly) {
+      const map = mapRef.current
+      if (!map) return
+      const ll = [lat, lon]
+      locateRef.current.clearLayers()
+      L.circle(ll, { radius: acc || 100, color: '#3b82f6', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.15 }).addTo(locateRef.current)
+      L.circleMarker(ll, { radius: 8, color: '#ffffff', weight: 3, fillColor: '#3b82f6', fillOpacity: 1 })
+        .addTo(locateRef.current).bindPopup('<b>📍 You are here</b><br>Your current GPS location')
+      if (fly) map.flyTo(ll, Math.max(map.getZoom(), 11))
+    }
+    J.cachePos = cachePos; J.drawMyLocation = drawMyLocation
+    try { const saved = JSON.parse(localStorage.getItem('saferoute_lastpos') || 'null'); if (saved) J.lastPos = saved } catch {}
+
+    // As soon as the site opens, show the user where they are on the map -
+    // only when permission was already granted (never a surprise prompt).
+    if (navigator.geolocation && navigator.permissions) {
+      navigator.permissions.query({ name: 'geolocation' }).then((st) => {
+        if (st.state !== 'granted') return
+        navigator.geolocation.getCurrentPosition((pos) => {
+          cachePos(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy)
+          if (!journeyRef.current?.route) drawMyLocation(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, true)
+        }, () => {}, { timeout: 8000, maximumAge: 600000 })
+      }).catch(() => {})
+    }
+
     // ---- GPS locate button (bottom-right): show my current position once.
     const LocateControl = L.Control.extend({
       onAdd() {
@@ -243,12 +284,8 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           }
           navigator.geolocation.getCurrentPosition(
             (pos) => {
-              const ll = [pos.coords.latitude, pos.coords.longitude]
-              locateRef.current.clearLayers()
-              L.circle(ll, { radius: pos.coords.accuracy || 100, color: '#3b82f6', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.15 }).addTo(locateRef.current)
-              L.circleMarker(ll, { radius: 8, color: '#ffffff', weight: 3, fillColor: '#3b82f6', fillOpacity: 1 })
-                .addTo(locateRef.current).bindPopup('<b>📍 You are here</b><br>Your current GPS location')
-              map.flyTo(ll, Math.max(map.getZoom(), 9))
+              cachePos(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy)
+              drawMyLocation(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, true)
             },
             () => { L.popup().setLatLng(map.getCenter()).setContent('Location unavailable — please allow location permission in your browser.').openOn(map) },
             { timeout: 10000, maximumAge: 300000 }
@@ -308,19 +345,41 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         const div = L.DomUtil.create('div', 'leaflet-control navbottom-wrap')
         div.innerHTML =
           '<div class="navbottom" style="display:none">' +
-          '  <div class="jnav"></div>' +
+          '  <div class="jedit">' +
+          '    <div class="jedit-row"><span class="dot from"></span><input class="jfrom" type="text" autocomplete="off" spellcheck="false" aria-label="From"></div>' +
+          '    <div class="jedit-row"><span class="dot to"></span><input class="jto" type="text" autocomplete="off" spellcheck="false" aria-label="To"></div>' +
+          '    <button class="japply" style="display:none">↻ Update trip</button>' +
+          '  </div>' +
+          '  <div class="jchips"></div>' +
           '  <div class="nb-etarow"><span class="jeta"></span><button class="jend">✕ End</button></div>' +
           '  <div class="jbar"><div class="jfill"></div></div>' +
           '  <div class="jstat"></div>' +
           '  <div class="jwarn"></div>' +
           '</div>'
         L.DomEvent.disableClickPropagation(div)
+        L.DomEvent.disableScrollPropagation(div)
         const root = div.querySelector('.navbottom')
+        const fromInput = div.querySelector('.jfrom')
+        const toInput = div.querySelector('.jto')
+        const applyBtn = div.querySelector('.japply')
         journeyUiRef.current = { ...journeyUiRef.current,
-          panel: root, nav: div.querySelector('.jnav'),
+          panel: root, fromInput, toInput,
           fill: div.querySelector('.jfill'), stat: div.querySelector('.jstat'),
           warn: div.querySelector('.jwarn'), eta: div.querySelector('.jeta'),
+          chips: div.querySelector('.jchips'),
         }
+        const markDirty = () => {
+          const dirty = J.meta && (fromInput.value.trim() !== J.meta.from && fromInput.value.trim() !== '' ||
+                                   toInput.value.trim() !== J.meta.to && toInput.value.trim() !== '')
+          applyBtn.style.display = dirty ? 'block' : 'none'
+        }
+        fromInput.addEventListener('input', markDirty)
+        toInput.addEventListener('input', markDirty)
+        applyBtn.addEventListener('click', () => {
+          editTripRef.current?.(fromInput.value, toInput.value)
+          applyBtn.style.display = 'none'
+          fromInput.blur(); toInput.blur()
+        })
         div.querySelector('.jend').addEventListener('click', () => endJourney())
         return div
       },
@@ -357,13 +416,17 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
 
     function setNav() {
       const ui = journeyUiRef.current
-      if (ui && J.meta) {
-        ui.nav.innerHTML =
-          `<div class="jnav-row"><span class="dot from"></span><span>${J.meta.from}</span></div>` +
-          `<div class="jnav-line"></div>` +
-          `<div class="jnav-row"><span class="dot to"></span><span>${J.meta.to}</span></div>`
+      if (!ui || !J.meta) return
+      if (ui.fromInput && document.activeElement !== ui.fromInput) ui.fromInput.value = J.meta.from
+      if (ui.toInput && document.activeElement !== ui.toInput) ui.toInput.value = J.meta.to
+      if (ui.chips && J.routesMeta) {
+        ui.chips.innerHTML = '<span>Route:</span>' + J.routesMeta.map((r) =>
+          `<button data-rid="${r.id}" class="${J.route?.id === r.id ? 'on' : ''}">${r.label.replace('Route ', '')}</button>`).join('')
+        ui.chips.querySelectorAll('button').forEach((b) =>
+          b.addEventListener('click', () => selectRouteRef.current?.(Number(b.dataset.rid))))
       }
     }
+    J.setNav = setNav
 
     function setButtons() {
       const ui = journeyUiRef.current
@@ -382,6 +445,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (J.mode === 'live') J.bannerHold = true
       setNav()
       journeyModeRef.current?.(true)
+      bumpJourneyRef.current?.()
       // The layout switches to fullscreen over the next frames — refit the map.
       setTimeout(() => mapRef.current?.invalidateSize(), 120)
       setTimeout(() => mapRef.current?.invalidateSize(), 450)
@@ -403,6 +467,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       hideJourneyUi()
       setButtons()
       journeyModeRef.current?.(false)
+      bumpJourneyRef.current?.()
     }
     J.end = endJourney
 
@@ -463,12 +528,23 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         showPanel()
         return
       }
-      J.mode = 'live'; J.playing = true; J.offCount = 0; J.rerouting = false
+      J.mode = 'live'; J.playing = true; J.offCount = 0; J.rerouting = false; J.coolUntil = 0
       showPanel(); setButtons()
       const ui = journeyUiRef.current
       ui.stat.textContent = 'Waiting for GPS signal… allow location access if asked.'
       ui.warn.textContent = ''
       if (ui.eta) ui.eta.innerHTML = ''
+      // Instant start, Google-Maps style: if we already know where the driver
+      // is (fix from page load or an earlier session), draw the guidance from
+      // that fix right away - live GPS refines it within seconds.
+      const cached = J.lastPos
+      if (cached && Date.now() - cached.at < 15 * 60000) {
+        onLivePosition({ coords: { latitude: cached.lat, longitude: cached.lon, accuracy: cached.acc ?? 1000, heading: null, speed: null } })
+      }
+      // One fast network fix as a bridge until the high-accuracy watch locks.
+      navigator.geolocation.getCurrentPosition(
+        (pos) => onLivePosition(pos), () => {},
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 30000 })
       J.watchId = navigator.geolocation.watchPosition(
         (pos) => onLivePosition(pos),
         () => {
@@ -476,7 +552,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           ui.warn.className = 'jwarn bad'
           setBanner({ arrow: '⚠', text: 'GPS signal lost', dist: '', tone: 'warn', then: 'Tracking paused — check location permission.' })
         },
-        { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
       )
     }
 
@@ -496,26 +572,31 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       }
       setVehicle(J.liveDot, ll, brg)
       J._lastPos = ll
+      cachePos(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy)
       followVehicle(J, map, ll)
 
       const near = nearestOnRoute(route, ll)
       const ui = journeyUiRef.current
       if (J.bannerHold && !J.rerouting) J.bannerHold = false  // first GPS fix: banner goes live
       updatePanel(route, Math.min(1, Math.max(0, near.frac)))
-      if (near.dist <= OFF_ROUTE_METRES) {
+      // GPS jitter must never cry wolf: the off-route distance grows with the
+      // fix's own accuracy, it takes 3 fixes in a row, and after one reroute
+      // the detector cools down for 45s. The banner carries the message -
+      // no map popup (it kept re-appearing and covering the road).
+      const threshold = Math.max(OFF_ROUTE_METRES, (pos.coords.accuracy || 0) * 1.5)
+      if (near.dist <= threshold) {
         J.offCount = 0
         J.bannerHold = false
         if (!J.rerouting) { ui.warn.textContent = 'On route ✓ — following the highlighted route.'; ui.warn.className = 'jwarn' }
       } else {
         J.offCount += 1
         J.bannerHold = true
-        if (J.offCount >= 2 && !J.rerouting) {
-          // Off route twice in a row: notify the driver and reroute from here.
+        if (J.offCount >= 3 && !J.rerouting && Date.now() > (J.coolUntil || 0)) {
           J.rerouting = true
+          J.coolUntil = Date.now() + 45000
           ui.warn.textContent = '⚠ You are off the route! Finding a new route from your current location…'
           ui.warn.className = 'jwarn bad'
           setBanner({ arrow: '⚠', text: 'You are off the route!', dist: '', tone: 'warn', then: 'Finding a new route from your current location…' })
-          L.popup().setLatLng(ll).setContent('<b>⚠ Off route</b><br>Recalculating a new route to your destination…').openOn(map)
           rerouteRef.current?.(pos.coords.latitude, pos.coords.longitude)
         } else if (!J.rerouting) {
           ui.warn.textContent = '⚠ You seem to be leaving the route…'
@@ -611,22 +692,21 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         from: result.origin.name, to: result.destination.name,
         destLat: result.destination.lat, destLon: result.destination.lon,
       } : null
+      J.routesMeta = result ? result.routes.map((r) => ({ id: r.id, label: r.label })) : null
       if (!J.mode) J.route = sel
       J.setButtons?.()
-      if (journeyUiRef.current?.panel.style.display !== 'none') {
-        const ui = journeyUiRef.current
-        if (J.meta) ui.nav.innerHTML =
-          `<div class="jnav-row"><span class="dot from"></span><span>${J.meta.from}</span></div>` +
-          `<div class="jnav-line"></div>` +
-          `<div class="jnav-row"><span class="dot to"></span><span>${J.meta.to}</span></div>`
-      }
+      if (journeyUiRef.current?.panel.style.display !== 'none') J.setNav?.()
     }
 
     layers.clearLayers()
     if (!result) return
 
     const bounds = []
+    const inJourney = !!journeyRef.current?.mode
     result.routes.forEach((r) => {
+      // During a journey draw ONLY the route being driven - parallel lines
+      // for the other options just confuse the driver (Victor's feedback).
+      if (inJourney && sel && r.id !== sel.id) return
       const isRec = r.id === result.recommended_route_id
       const isSel = r.id === selectedRouteId
       const line = L.polyline(r.geometry, {
@@ -666,7 +746,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     if (bounds.length && isNewResult && !journeyActive) {
       map.fitBounds(bounds, { padding: [30, 30] })
     }
-  }, [result, selectedRouteId, onSelectRoute])
+  }, [result, selectedRouteId, onSelectRoute, journeyTick])
 
   // Heat layer on its own effect: rebuilding the heat canvas on every route
   // selection made switching feel slow, so it only redraws when the result,
