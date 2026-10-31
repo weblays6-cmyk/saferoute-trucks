@@ -364,7 +364,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
               drawMyLocation(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, true)
             },
             () => { L.popup().setLatLng(map.getCenter()).setContent('Location unavailable — please allow location permission in your browser.').openOn(map) },
-            { timeout: 10000, maximumAge: 300000 }
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
           )
         })
         journeyUiRef.current.locate = div
@@ -580,7 +580,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
               map.setView([pos.coords.latitude, pos.coords.longitude], 16, { animate: true })
             },
             () => { L.popup().setLatLng(map.getCenter()).setContent('Location unavailable — please allow location permission in your browser.').openOn(map) },
-            { timeout: 10000, maximumAge: 300000 }
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
           )
         })
         journeyUiRef.current.recenter = div
@@ -781,7 +781,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       // One fast network fix as a bridge until the high-accuracy watch locks.
       navigator.geolocation.getCurrentPosition(
         (pos) => onLivePosition(pos), () => {},
-        { enableHighAccuracy: false, timeout: 10000, maximumAge: 30000 })
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 })
       J.watchId = navigator.geolocation.watchPosition(
         (pos) => onLivePosition(pos),
         () => {

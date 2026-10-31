@@ -267,7 +267,9 @@ export default function TripForm({ form, setForm, onSubmit, loading, onQuickDepa
         setGpsMsg(`Current location set: ${name}`)
       },
       () => { if (!auto) setGpsMsg('Location permission denied — please type your starting place.') },
-      { timeout: 10000, maximumAge: 300000 }
+      // A button press means 'where am I NOW': high accuracy, near-fresh fix.
+      // (Coarse + 5-minute-stale fixes put the start in the wrong street.)
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
     )
   }
 
