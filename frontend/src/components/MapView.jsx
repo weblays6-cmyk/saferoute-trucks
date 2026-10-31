@@ -193,6 +193,7 @@ function setVehicle(marker, latlng, bearing) {
 // Follow the vehicle ONLY when it reaches the map's edge zone. Panning on a
 // timer (the old approach) made the whole map shake during the journey.
 function followVehicle(J, map, pos) {
+  if (J.followLock) { map.panTo(pos, { animate: true, duration: 0.25 }); return }
   if (!map.getBounds().pad(-0.18).contains(pos)) {
     map.panTo(pos, { animate: true, duration: 0.25 })
   }
@@ -205,7 +206,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
   const lastResultRef = useRef(null)
   const locateRef = useRef(null)
   const journeyRef = useRef(null)
-  const journeyUiRef = useRef(null)
+  const journeyUiRef = useRef({})
   const rerouteRef = useRef(onReroute)
   rerouteRef.current = onReroute
   const journeyModeRef = useRef(onJourneyMode)
@@ -230,8 +231,9 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     try { savedBase = localStorage.getItem('saferoute_base') || 'light' } catch {}
     if (!bases[savedBase]) savedBase = 'light'
     mapRef.current = L.map('saferoute-map', {
+      attributionControl: false, // Victor: no "Leaflet / OSM contributors" strip at the bottom
       layers: [bases[savedBase]], preferCanvas: true, fadeAnimation: false,
-      rotate: true, touchRotate: true, // twist with two fingers to rotate the map
+      rotate: true, touchRotate: true, rotateControl: false, // twist with two fingers; no plugin compass box (our Re-centre resets north)
     }).setView([34.1, -97.1], 6)
     window.__srMap = mapRef.current // debug/testing handle
     // If OpenStreetMap tiles keep failing (throttling / slow network), quietly
@@ -288,6 +290,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       voiceStep: null, voiceStage: 0, joined: false,
     }
     journeyRef.current = J
+    mapRef.current.on('dragstart', () => { J.followLock = false })
 
     // ---- My-location helpers: cache every fix (instant journey starts) and
     // draw the blue "you are here" dot. Used by the locate button, the
@@ -342,6 +345,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
             { timeout: 10000, maximumAge: 300000 }
           )
         })
+        journeyUiRef.current.locate = div
         return div
       },
     })
@@ -448,14 +452,19 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     const RecenterControl = L.Control.extend({
       onAdd() {
         const div = L.DomUtil.create('div', 'leaflet-control recenter-wrap')
-        div.innerHTML = '<button class="recenter-btn" title="Re-centre on me">⌖</button>'
+        div.innerHTML = '<button class="recenter-btn" title="Re-centre on me" aria-label="Re-centre on me">' +
+          '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#0b7285" stroke-width="2">' +
+          '<circle cx="12" cy="12" r="6.5"/><circle cx="12" cy="12" r="1.6" fill="#0b7285" stroke="none"/>' +
+          '<path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></button>'
         div.style.display = 'none'
         L.DomEvent.disableClickPropagation(div)
+        L.DomEvent.disableScrollPropagation(div)
         div.querySelector('.recenter-btn').addEventListener('click', () => {
           const map = mapRef.current
           if (map && J._lastPos) {
+            J.followLock = true // Google-style: camera stays locked on the driver until they drag the map
             map.setBearing?.(0) // re-centre also brings north back up
-            map.setView(J._lastPos, Math.max(map.getZoom(), 17), { animate: true })
+            map.setView(J._lastPos, 17, { animate: true })
           }
         })
         journeyUiRef.current.recenter = div
@@ -514,6 +523,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (ui.banner) ui.banner.root.style.display = 'block'
       if (ui.panel) ui.panel.style.display = 'block'
       if (ui.recenter) ui.recenter.style.display = 'block'
+      if (ui.locate) ui.locate.style.display = 'none' // Re-centre replaces Locate mid-journey (two similar buttons confused taps)
       if (ui.btns) ui.btns.style.display = 'none'
     }
     function hideJourneyUi() {
@@ -522,6 +532,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (ui.banner) ui.banner.root.style.display = 'none'
       if (ui.panel) ui.panel.style.display = 'none'
       if (ui.recenter) ui.recenter.style.display = 'none'
+      if (ui.locate) ui.locate.style.display = 'block'
       if (ui.btns) ui.btns.style.display = 'block'
     }
     J.showUi = showJourneyUi; J.hideUi = hideJourneyUi
@@ -588,7 +599,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         showPanel()
         return
       }
-      J.mode = 'live'; J.playing = true; J.offCount = 0; J.rerouting = false; J.coolUntil = 0; J.joined = false
+      J.mode = 'live'; J.playing = true; J.offCount = 0; J.rerouting = false; J.coolUntil = 0; J.joined = false; J.followLock = true
       J.startChecked = false; J.startRerouted = false; J.zoomedIn = false
       if (J.lastPos) {
         const m = mapRef.current
@@ -882,6 +893,10 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
     const journeyActive = journeyRef.current?.mode
     if (bounds.length && isNewResult && !journeyActive) {
       map.fitBounds(bounds, { padding: [30, 30] })
+    } else if (journeyActive && J._lastPos) {
+      // Any redraw mid-journey (reroute, edit, route switch) keeps the camera
+      // on the driver at street level - on phone AND desktop alike.
+      map.setView(J._lastPos, Math.max(map.getZoom(), 16))
     }
   }, [result, selectedRouteId, onSelectRoute, journeyTick])
 
