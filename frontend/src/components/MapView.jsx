@@ -426,10 +426,11 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           '    <div class="jswaprow"><button class="jswap" title="Swap start and destination">⇅ Swap</button><button class="japply" style="display:none">↻ Update trip</button></div>' +
           '  </div>' +
           '  <div class="jchips"></div>' +
-          '  <div class="nb-etarow"><span class="jeta"></span><button class="jshare" title="Share live location">📤 Share</button><button class="jvoice" title="Voice guidance on/off">🔊</button><button class="jend">✕ End</button></div>' +
+          '  <div class="nb-etarow"><span class="jeta"></span><button class="jshare" title="Share live location">📤 Share</button><button class="jvoice" title="Voice guidance on/off">🔊</button></div>' +
           '  <div class="jbar"><div class="jfill"></div></div>' +
           '  <div class="jstat"></div>' +
           '  <div class="jwarn"></div>' +
+          '  <div class="nb-endrow"><button class="jmin" title="Hide or show the trip details">▾ Hide</button><button class="jend">✕ End</button></div>' +
           '</div>'
         L.DomEvent.disableClickPropagation(div)
         L.DomEvent.disableScrollPropagation(div)
@@ -545,6 +546,13 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           applyEdit() // a swap is a complete change: rebuild the trip at once
         })
         div.querySelector('.jend').addEventListener('click', () => endJourney())
+        // Minimise: fold the card down to ETA + End; End stays reachable
+        // in BOTH states (Victor: End must sit separate, at the bottom).
+        const minBtn = div.querySelector('.jmin')
+        minBtn.addEventListener('click', () => {
+          const folded = root.classList.toggle('min')
+          minBtn.textContent = folded ? '▴ Show' : '▾ Hide'
+        })
         return div
       },
     })
