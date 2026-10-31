@@ -103,6 +103,7 @@ function dirWord(mod = '') {
   return 'straight'
 }
 function stepArrow(st) {
+  if (st?.name && /flyover|bridge/i.test(st.name)) return '🌉' // flyovers/bridges called out clearly
   const m = st.modifier || '', t = st.type || ''
   if (t === 'arrive') return '📍'
   if (t === 'roundabout' || t === 'rotary') return '↻'
@@ -122,7 +123,7 @@ function stepText(st) {
   const name = st.name && st.name !== '-' ? st.name : ''
   const onto = name ? ` onto ${name}` : ''
   switch (st.type) {
-    case 'depart': return name ? `towards ${name}` : 'Start your journey'
+    case 'depart': return `Head ${st.bearing != null ? compassOf(st.bearing) : 'out'}${name ? ` towards ${name}` : ''}`
     case 'arrive': return 'Arrive at your destination'
     case 'turn': return `Turn ${dirWord(st.modifier)}${onto}`
     case 'end of road': return `At the end of the road, turn ${dirWord(st.modifier)}${onto}`
@@ -136,10 +137,27 @@ function stepText(st) {
   }
 }
 // The next meaningful maneuver after distMi, plus the one after it ("Then …").
+const COMPASS = ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest']
+function compassOf(deg) { return COMPASS[Math.round((((deg % 360) + 360) % 360) / 45) % 8] }
+function initialBearing(route) {
+  const g = route.geometry || []
+  if (g.length < 2) return 0
+  const a = { lat: g[0][0], lng: g[0][1] }
+  const k = Math.min(g.length - 1, 12)
+  const b = { lat: g[k][0], lng: g[k][1] }
+  return bearingDeg(a, b)
+}
+
 function nextManeuver(route, distMi) {
   const steps = (route.steps || []).filter((st, i) =>
     !(st.type === 'depart' && i > 0) &&
     !(st.type === 'arrive' && st.mile < route.distance_miles - 0.05))
+  // At the very start, Google-Maps style: the first instruction is the
+  // depart direction ("Head south towards HMT Rd"), then the first turn.
+  if (distMi <= 0.03 && steps[0]?.type === 'depart') {
+    const firstTurn = steps.find((st) => st.mile > 0.015 && st.type !== 'depart') || null
+    return { step: { ...steps[0], bearing: initialBearing(route) }, next: firstTurn }
+  }
   const idx = steps.findIndex((st) => st.mile > distMi + 0.015)
   if (idx === -1) return null
   return { step: steps[idx], next: steps[idx + 1] && steps[idx + 1].type !== 'arrive' ? steps[idx + 1] : null }
@@ -239,7 +257,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       watchId: null, offCount: 0, rerouting: false, route: null, meta: null,
       frac: 0, arrived: false,
       voiceOn: (() => { try { return localStorage.getItem('saferoute_voice') !== '0' } catch { return true } })(),
-      voiceStep: null, voiceStage: 0,
+      voiceStep: null, voiceStage: 0, joined: false,
     }
     journeyRef.current = J
 
@@ -420,6 +438,22 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       } catch {}
     }
     J.speak = speak
+    // Google-Maps behaviour: navigation starts from where the driver
+    // actually IS. If that is well away from the searched route's start,
+    // rebuild the route from the live position to the same destination.
+    function startFromHere(lat, lon) {
+      if (J.startRerouted || !J.route) return
+      const startPt = J.route.geometry?.[0]
+      if (!startPt) return
+      const d = L.latLng(lat, lon).distanceTo(L.latLng(startPt[0], startPt[1]))
+      if (d <= 500) { J.joined = d <= 400; return }
+      J.startRerouted = true
+      J.rerouting = true
+      setBanner({ arrow: '📍', text: 'Starting from your current location', dist: '', tone: 'ok', then: 'Rebuilding the route from where you are…' })
+      speak('Starting from your current location')
+      rerouteRef.current?.(lat, lon)
+    }
+    J.startFromHere = startFromHere
     function spokenDist(mi) {
       if (mi < 0.1) return `${Math.max(30, Math.round(mi * 5280 / 10) * 10)} feet`
       return `${mi < 0.95 ? Math.round(mi * 20) / 20 : mi.toFixed(1)} miles`
@@ -503,11 +537,13 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         showPanel()
         return
       }
-      J.mode = 'live'; J.playing = true; J.offCount = 0; J.rerouting = false; J.coolUntil = 0
+      J.mode = 'live'; J.playing = true; J.offCount = 0; J.rerouting = false; J.coolUntil = 0; J.joined = false
+      J.startChecked = false; J.startRerouted = false
       showPanel(); setButtons()
       const ui = journeyUiRef.current
       ui.stat.textContent = 'Waiting for GPS signal… allow location access if asked.'
-      speak(`Starting navigation to ${shortName(J.meta?.to || 'your destination')}`)
+      const nmStart = nextManeuver(J.route, 0)
+      speak(`Starting navigation to ${shortName(J.meta?.to || 'your destination')}${nmStart ? '. ' + stepText(nmStart.step) : ''}`)
       ui.warn.textContent = ''
       if (ui.eta) ui.eta.innerHTML = ''
       // Instant start, Google-Maps style: if we already know where the driver
@@ -551,15 +587,34 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       cachePos(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy)
       followVehicle(J, map, ll)
 
+      if (!J.startChecked && (pos.coords.accuracy ?? 9999) < 1000) {
+        J.startChecked = true
+        J.startFromHere?.(pos.coords.latitude, pos.coords.longitude)
+        if (J.startRerouted) return // the rebuilt route is on its way
+      }
       const near = nearestOnRoute(route, ll)
       const ui = journeyUiRef.current
       if (J.bannerHold && !J.rerouting) J.bannerHold = false  // first GPS fix: banner goes live
-      updatePanel(route, Math.min(1, Math.max(0, near.frac)))
       // GPS jitter must never cry wolf: the off-route distance grows with the
       // fix's own accuracy, it takes 3 fixes in a row, and after one reroute
       // the detector cools down for 45s. The banner carries the message -
       // no map popup (it kept re-appearing and covering the road).
-      const threshold = Math.max(OFF_ROUTE_METRES, (pos.coords.accuracy || 0) * 1.5)
+      const threshold = Math.max(400, (pos.coords.accuracy || 0) * 1.5)
+      // JOINED grace: the typed origin never matches the real GPS spot
+      // exactly (and desktop/Wi-Fi GPS can be hundreds of metres off), so a
+      // driver who simply has not REACHED the route yet is not "leaving" it.
+      // Until the first on-route fix, show calm English guidance - no
+      // warnings, no strikes, no reroute.
+      if (!J.joined && near.dist > threshold) {
+        J.bannerHold = true
+        ui.warn.textContent = 'Head to the highlighted route - warnings start once you join it.'
+        ui.warn.className = 'jwarn'
+        setBanner({ arrow: '➤', text: 'Head to the route', dist: fmtDist(near.dist / 1609.34), tone: '', then: 'Navigation starts when you reach the highlighted route.' })
+        updatePanel(route, Math.min(1, Math.max(0, near.frac)))
+        return
+      }
+      if (near.dist <= threshold) J.joined = true
+      updatePanel(route, Math.min(1, Math.max(0, near.frac)))
       if (near.dist <= threshold) {
         J.offCount = 0
         J.bannerHold = false
@@ -575,10 +630,12 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
           setBanner({ arrow: '⚠', text: 'You are off the route!', dist: '', tone: 'warn', then: 'Finding a new route from your current location…' })
           speak('You are off the route. Finding a new route.')
           rerouteRef.current?.(pos.coords.latitude, pos.coords.longitude)
-        } else if (!J.rerouting) {
+        } else if (!J.rerouting && J.offCount >= 2) {
           ui.warn.textContent = '⚠ You seem to be leaving the route…'
           ui.warn.className = 'jwarn bad'
           setBanner({ arrow: '⚠', text: 'You seem to be leaving the route…', dist: '', tone: 'warn' })
+        } else if (!J.rerouting) {
+          J.bannerHold = false // a single stray fix says nothing at all
         }
       }
     }
@@ -661,7 +718,7 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (J.mode === 'live' && isNewResult && editedTrip && sel) {
         // Victor: pressing Update trip mid-journey must NOT leave the map -
         // the journey continues on the new trip (same GPS watch, new route).
-        J.route = sel; J.offCount = 0; J.rerouting = false; J.arrived = false; J.frac = 0
+        J.route = sel; J.offCount = 0; J.rerouting = false; J.arrived = false; J.frac = 0; J.joined = false
         J.bannerHold = true
         J.setBanner?.({ arrow: '↻', text: 'Trip updated', dist: '', tone: 'ok', then: 'Navigating to the new destination.' })
         setTimeout(() => { J.bannerHold = false }, 3000)
@@ -670,9 +727,15 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
         // This result is a reroute (or a refresh of the same trip): keep tracking.
         const wasRerouting = J.rerouting
         J.route = sel
+        J.joined = true // a rerouted route starts at the driver
         J.offCount = 0
         J.rerouting = false
         if (wasRerouting && journeyUiRef.current) {
+          if (J.startRerouted) {
+            const nm0 = nextManeuver(sel, 0)
+            if (nm0) J.speak?.(stepText(nm0.step))
+            J.startRerouted = false
+          }
           journeyUiRef.current.warn.textContent = '✅ New route ready — follow the highlighted route.'
           journeyUiRef.current.warn.className = 'jwarn'
           J.bannerHold = true
@@ -707,6 +770,11 @@ export default function MapView({ result, selectedRouteId, onSelectRoute, showHe
       if (inJourney && sel && r.id !== sel.id) return
       const isRec = r.id === result.recommended_route_id
       const isSel = r.id === selectedRouteId
+      if (isSel) {
+        // White casing: the driven route lifts off the map so flyovers and
+        // main roads read clearly against the side roads beneath them.
+        L.polyline(r.geometry, { color: '#ffffff', weight: 11, opacity: 0.9 }).addTo(layers)
+      }
       const line = L.polyline(r.geometry, {
         color: isRec ? '#00c896' : '#3b82f6',
         weight: isSel ? 7 : isRec ? 6 : 4,

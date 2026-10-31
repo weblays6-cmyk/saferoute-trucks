@@ -5,14 +5,17 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 // which the backend geocoder also accepts.
 async function reverseGeocode(lat, lon) {
   try {
-    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=16`)
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=18`)
     const d = await r.json()
     const a = d.address || {}
-    // Show the actual area the user is in, not just the city: suburb /
-    // neighbourhood first, then city, then state (Victor's ask).
-    const area = a.suburb || a.neighbourhood || a.village || a.hamlet || a.residential || ''
+    // Show the EXACT locality the user stands in (Surya Nagar, IDPL Colony -
+    // the OSM "neighbourhood"), not the administrative ward: Nominatim puts
+    // names like "Ward 131 Quthbullapur" in suburb, which confused users.
+    // Order: neighbourhood -> non-Ward suburb -> city -> state.
+    const area = a.neighbourhood || a.residential || a.quarter || a.hamlet || a.village || ''
+    const suburb = a.suburb && !/^ward\b/i.test(a.suburb) ? a.suburb : ''
     const city = a.city || a.town || a.county || ''
-    const parts = [...new Set([area, city, a.state].filter(Boolean))]
+    const parts = [...new Set([area, suburb, city, a.state].filter(Boolean))].slice(0, 3)
     return parts.join(', ') || d.display_name?.split(',').slice(0, 3).join(',') || `${lat}, ${lon}`
   } catch {
     return `${lat}, ${lon}`
